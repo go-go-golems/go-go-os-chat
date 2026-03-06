@@ -22,8 +22,7 @@ type strictChatRequestBody struct {
 	Prompt           string         `json:"prompt"`
 	Text             string         `json:"text,omitempty"`
 	ConvID           string         `json:"conv_id"`
-	RuntimeKey       string         `json:"runtime_key,omitempty"`
-	RegistrySlug     string         `json:"registry_slug,omitempty"`
+	Profile          string         `json:"profile,omitempty"`
 	RequestOverrides map[string]any `json:"request_overrides"`
 	IdempotencyKey   string         `json:"idempotency_key,omitempty"`
 }
@@ -129,7 +128,7 @@ func (r *StrictRequestResolver) resolveChat(req *http.Request) (webhttp.Resolved
 	var resolvedRuntime *gepprofiles.RuntimeSpec
 	var profileVersion uint64
 	if r.profileRegistry != nil {
-		profileSlug, err := r.resolveProfileSelection(req, body.RuntimeKey)
+		profileSlug, err := r.resolveProfileSelection(req, body.Profile)
 		if err != nil {
 			return webhttp.ResolvedConversationRequest{}, err
 		}
@@ -154,7 +153,7 @@ func (r *StrictRequestResolver) resolveChat(req *http.Request) (webhttp.Resolved
 	}, nil
 }
 
-func (r *StrictRequestResolver) resolveProfileSelection(req *http.Request, bodyRuntimeKeyRaw string) (gepprofiles.ProfileSlug, error) {
+func (r *StrictRequestResolver) resolveProfileSelection(req *http.Request, bodyProfileRaw string) (gepprofiles.ProfileSlug, error) {
 	if r == nil || r.profileRegistry == nil {
 		return "", &webhttp.RequestResolutionError{
 			Status:    http.StatusInternalServerError,
@@ -162,14 +161,9 @@ func (r *StrictRequestResolver) resolveProfileSelection(req *http.Request, bodyR
 		}
 	}
 
-	slugRaw := strings.TrimSpace(bodyRuntimeKeyRaw)
+	slugRaw := strings.TrimSpace(bodyProfileRaw)
 	if slugRaw == "" && req != nil {
-		slugRaw = strings.TrimSpace(req.URL.Query().Get("runtime_key"))
-	}
-	if slugRaw == "" && req != nil {
-		if ck, err := req.Cookie("chat_profile"); err == nil && ck != nil {
-			slugRaw = strings.TrimSpace(ck.Value)
-		}
+		slugRaw = strings.TrimSpace(req.URL.Query().Get("profile"))
 	}
 	if strings.TrimSpace(slugRaw) == "" {
 		return "", nil
@@ -179,7 +173,7 @@ func (r *StrictRequestResolver) resolveProfileSelection(req *http.Request, bodyR
 	if err != nil {
 		return "", &webhttp.RequestResolutionError{
 			Status:    http.StatusBadRequest,
-			ClientMsg: "invalid runtime_key: " + slugRaw,
+			ClientMsg: "invalid profile: " + slugRaw,
 			Err:       err,
 		}
 	}

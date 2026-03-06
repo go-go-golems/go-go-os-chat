@@ -35,9 +35,9 @@ func TestStrictRequestResolver_ChatUsesTextFallback(t *testing.T) {
 	require.Equal(t, "inventory", plan.RuntimeKey)
 }
 
-func TestStrictRequestResolver_ChatUsesRuntimeKeySelection(t *testing.T) {
+func TestStrictRequestResolver_ChatUsesProfileSelection(t *testing.T) {
 	r := newResolverWithProfiles(t)
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"text":"hello","runtime_key":"analyst"}`))
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"text":"hello","profile":"analyst"}`))
 
 	plan, err := r.Resolve(req)
 	require.NoError(t, err)
@@ -48,10 +48,9 @@ func TestStrictRequestResolver_ChatUsesRuntimeKeySelection(t *testing.T) {
 	require.Equal(t, "Analyst system", plan.ResolvedRuntime.SystemPrompt)
 }
 
-func TestStrictRequestResolver_WSUsesCookieProfileSelection(t *testing.T) {
+func TestStrictRequestResolver_WSUsesProfileQuerySelection(t *testing.T) {
 	r := newResolverWithProfiles(t)
-	req := httptest.NewRequest(http.MethodGet, "/ws?conv_id=conv-1", nil)
-	req.AddCookie(&http.Cookie{Name: "chat_profile", Value: "analyst"})
+	req := httptest.NewRequest(http.MethodGet, "/ws?conv_id=conv-1&profile=analyst", nil)
 
 	plan, err := r.Resolve(req)
 	require.NoError(t, err)
@@ -59,9 +58,20 @@ func TestStrictRequestResolver_WSUsesCookieProfileSelection(t *testing.T) {
 	require.Equal(t, uint64(7), plan.ProfileVersion)
 }
 
+func TestStrictRequestResolver_WSIgnoresLegacyCookieProfileSelection(t *testing.T) {
+	r := newResolverWithProfiles(t)
+	req := httptest.NewRequest(http.MethodGet, "/ws?conv_id=conv-1", nil)
+	req.AddCookie(&http.Cookie{Name: "chat_profile", Value: "analyst"})
+
+	plan, err := r.Resolve(req)
+	require.NoError(t, err)
+	require.Equal(t, "inventory", plan.RuntimeKey)
+	require.Equal(t, uint64(3), plan.ProfileVersion)
+}
+
 func TestStrictRequestResolver_UnknownProfileReturnsNotFound(t *testing.T) {
 	r := newResolverWithProfiles(t)
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","runtime_key":"missing"}`))
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","profile":"missing"}`))
 
 	_, err := r.Resolve(req)
 	require.Error(t, err)
@@ -70,9 +80,9 @@ func TestStrictRequestResolver_UnknownProfileReturnsNotFound(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, re.Status)
 }
 
-func TestStrictRequestResolver_InvalidRuntimeKeyReturnsBadRequest(t *testing.T) {
+func TestStrictRequestResolver_InvalidProfileReturnsBadRequest(t *testing.T) {
 	r := newResolverWithProfiles(t)
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","runtime_key":"invalid runtime key!"}`))
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","profile":"invalid runtime key!"}`))
 
 	_, err := r.Resolve(req)
 	require.Error(t, err)
@@ -92,7 +102,7 @@ func TestStrictRequestResolver_UnknownRegistryQueryIsIgnored(t *testing.T) {
 
 func TestStrictRequestResolver_InvalidRegistryInBodyIsIgnored(t *testing.T) {
 	r := newResolverWithProfiles(t)
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","registry_slug":"invalid registry!","runtime_key":"analyst"}`))
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","registry_slug":"invalid registry!","profile":"analyst"}`))
 
 	plan, err := r.Resolve(req)
 	require.NoError(t, err)
@@ -101,7 +111,7 @@ func TestStrictRequestResolver_InvalidRegistryInBodyIsIgnored(t *testing.T) {
 
 func TestStrictRequestResolver_RequestOverridesAreValidatedByPolicy(t *testing.T) {
 	r := newResolverWithProfiles(t)
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","runtime_key":"inventory","request_overrides":{"system_prompt":"override"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","profile":"inventory","request_overrides":{"system_prompt":"override"}}`))
 
 	_, err := r.Resolve(req)
 	require.Error(t, err)
