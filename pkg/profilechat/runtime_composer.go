@@ -16,9 +16,19 @@ import (
 )
 
 type RuntimeComposerOptions struct {
-	RuntimeKey   string
-	SystemPrompt string
-	AllowedTools []string
+	RuntimeKey       string
+	SystemPrompt     string
+	AllowedTools     []string
+	ContextProvider  ConversationContextProvider
+}
+
+type ConversationContext struct {
+	SystemPromptAddendum string
+	Metadata             map[string]any
+}
+
+type ConversationContextProvider interface {
+	Lookup(ctx context.Context, convID string) (*ConversationContext, error)
 }
 
 type RuntimeComposer struct {
@@ -103,6 +113,19 @@ func (c *RuntimeComposer) Compose(ctx context.Context, req infruntime.Conversati
 	if profileRuntime != nil && len(profileRuntime.Tools) > 0 {
 		allowedTools = append([]string(nil), profileRuntime.Tools...)
 	}
+	contextAddendum := ""
+	if c.options.ContextProvider != nil && strings.TrimSpace(req.ConvID) != "" {
+		convContext, err := c.options.ContextProvider.Lookup(ctx, strings.TrimSpace(req.ConvID))
+		if err != nil {
+			return infruntime.ComposedRuntime{}, errors.Wrap(err, "lookup conversation context")
+		}
+		if convContext != nil {
+			contextAddendum = strings.TrimSpace(convContext.SystemPromptAddendum)
+		}
+	}
+	if contextAddendum != "" {
+		systemPrompt = joinPromptSections(systemPrompt, contextAddendum)
+	}
 
 	profileMiddlewares, err := runtimeMiddlewaresFromProfile(profileRuntime)
 	if err != nil {
@@ -135,6 +158,7 @@ func (c *RuntimeComposer) Compose(ctx context.Context, req infruntime.Conversati
 			RuntimeKey:          runtimeKey,
 			SystemPrompt:        systemPrompt,
 			AllowedTools:        allowedTools,
+			ContextAddendum:     contextAddendum,
 			ResolvedMiddlewares: resolvedUses,
 			ProfileRuntime:      profileRuntime,
 			StepSettings:        effectiveStepSettings,
@@ -292,6 +316,7 @@ type runtimeFingerprintInput struct {
 	ProfileVersion      uint64
 	RuntimeKey          string
 	SystemPrompt        string
+	ContextAddendum     string
 	AllowedTools        []string
 	ResolvedMiddlewares []gepprofiles.MiddlewareUse
 	ProfileRuntime      *gepprofiles.RuntimeSpec
@@ -303,6 +328,7 @@ func runtimeFingerprint(in runtimeFingerprintInput) string {
 		"profile_version":      in.ProfileVersion,
 		"runtime_key":          in.RuntimeKey,
 		"system_prompt":        in.SystemPrompt,
+		"context_addendum":     in.ContextAddendum,
 		"allowed_tools":        in.AllowedTools,
 		"resolved_middlewares": in.ResolvedMiddlewares,
 	}
@@ -322,6 +348,18 @@ func runtimeFingerprint(in runtimeFingerprintInput) string {
 		return in.RuntimeKey
 	}
 	return string(b)
+}
+
+func joinPromptSections(parts ...string) string {
+	trimmed := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		trimmed = append(trimmed, part)
+	}
+	return strings.Join(trimmed, "\n\n")
 }
 
 func normalizeConfigObject(raw any, context string) (map[string]any, error) {

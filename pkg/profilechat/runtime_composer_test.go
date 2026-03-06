@@ -19,6 +19,17 @@ import (
 	infruntime "github.com/go-go-golems/pinocchio/pkg/inference/runtime"
 )
 
+type runtimeComposerTestContextProvider struct {
+	contextByConvID map[string]*ConversationContext
+}
+
+func (p runtimeComposerTestContextProvider) Lookup(_ context.Context, convID string) (*ConversationContext, error) {
+	if p.contextByConvID == nil {
+		return nil, nil
+	}
+	return p.contextByConvID[convID], nil
+}
+
 type runtimeComposerTestSection struct {
 	slug string
 }
@@ -261,5 +272,48 @@ func TestRuntimeComposer_AppliesProfileStepSettingsPatch(t *testing.T) {
 	}
 	if got, want := stepMeta["ai-engine"], "patched-engine"; got != want {
 		t.Fatalf("step_settings_patch not applied: got=%#v want=%#v", got, want)
+	}
+}
+
+func TestRuntimeComposer_AppendsConversationContextPrompt(t *testing.T) {
+	composer := NewRuntimeComposerWithDefinitions(
+		minimalRuntimeComposerValues(t),
+		RuntimeComposerOptions{
+			RuntimeKey:   "assistant",
+			SystemPrompt: "You are a helpful OS assistant.",
+			ContextProvider: runtimeComposerTestContextProvider{
+				contextByConvID: map[string]*ConversationContext{
+					"conv-app-chat": {
+						SystemPromptAddendum: "Selected app context:\n- app_id: sqlite\n- name: SQLite",
+					},
+				},
+			},
+		},
+		newRuntimeComposerDefinitionRegistry(t),
+		middlewarecfg.BuildDeps{},
+		nil,
+	)
+
+	res, err := composer.Compose(context.Background(), infruntime.ConversationRuntimeRequest{
+		ConvID:     "conv-app-chat",
+		ProfileKey: "assistant",
+	})
+	if err != nil {
+		t.Fatalf("compose failed: %v", err)
+	}
+
+	if !strings.Contains(res.SeedSystemPrompt, "You are a helpful OS assistant.") {
+		t.Fatalf("missing base prompt in seed system prompt: %q", res.SeedSystemPrompt)
+	}
+	if !strings.Contains(res.SeedSystemPrompt, "Selected app context:") {
+		t.Fatalf("missing conversation context addendum in seed system prompt: %q", res.SeedSystemPrompt)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(res.RuntimeFingerprint), &payload); err != nil {
+		t.Fatalf("unmarshal runtime fingerprint: %v", err)
+	}
+	if got := payload["context_addendum"]; got == nil || !strings.Contains(got.(string), "app_id: sqlite") {
+		t.Fatalf("missing context addendum in runtime fingerprint: %#v", payload)
 	}
 }
