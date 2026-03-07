@@ -91,40 +91,59 @@ func TestStrictRequestResolver_InvalidProfileReturnsBadRequest(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, re.Status)
 }
 
-func TestStrictRequestResolver_UnknownRegistryQueryIsIgnored(t *testing.T) {
+func TestStrictRequestResolver_UnknownRegistryQueryReturnsNotFound(t *testing.T) {
 	r := newResolverWithProfiles(t)
 	req := httptest.NewRequest(http.MethodPost, "/chat?registry=missing", strings.NewReader(`{"prompt":"hi"}`))
 
-	plan, err := r.Resolve(req)
-	require.NoError(t, err)
-	require.Equal(t, "inventory", plan.RuntimeKey)
+	_, err := r.Resolve(req)
+	require.Error(t, err)
+	var re *webhttp.RequestResolutionError
+	require.ErrorAs(t, err, &re)
+	require.Equal(t, http.StatusNotFound, re.Status)
 }
 
-func TestStrictRequestResolver_InvalidRegistryInBodyIsIgnored(t *testing.T) {
+func TestStrictRequestResolver_InvalidRegistryInBodyReturnsBadRequest(t *testing.T) {
 	r := newResolverWithProfiles(t)
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","registry":"invalid registry!","profile":"analyst"}`))
 
-	plan, err := r.Resolve(req)
-	require.NoError(t, err)
-	require.Equal(t, "analyst", plan.RuntimeKey)
+	_, err := r.Resolve(req)
+	require.Error(t, err)
+	var re *webhttp.RequestResolutionError
+	require.ErrorAs(t, err, &re)
+	require.Equal(t, http.StatusBadRequest, re.Status)
 }
 
-func TestStrictRequestResolver_LegacyRegistrySlugQueryAliasStillWorks(t *testing.T) {
+func TestStrictRequestResolver_LegacyRegistrySlugQueryReturnsBadRequest(t *testing.T) {
 	r := newResolverWithProfiles(t)
 	req := httptest.NewRequest(http.MethodPost, "/chat?registry_slug=missing", strings.NewReader(`{"prompt":"hi"}`))
 
-	plan, err := r.Resolve(req)
-	require.NoError(t, err)
-	require.Equal(t, "inventory", plan.RuntimeKey)
+	_, err := r.Resolve(req)
+	require.Error(t, err)
+	var re *webhttp.RequestResolutionError
+	require.ErrorAs(t, err, &re)
+	require.Equal(t, http.StatusBadRequest, re.Status)
 }
 
-func TestStrictRequestResolver_LegacyRegistrySlugBodyAliasStillWorks(t *testing.T) {
+func TestStrictRequestResolver_LegacyRegistrySlugBodyReturnsBadRequest(t *testing.T) {
 	r := newResolverWithProfiles(t)
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","registry_slug":"invalid registry!","profile":"analyst"}`))
 
-	plan, err := r.Resolve(req)
-	require.NoError(t, err)
-	require.Equal(t, "analyst", plan.RuntimeKey)
+	_, err := r.Resolve(req)
+	require.Error(t, err)
+	var re *webhttp.RequestResolutionError
+	require.ErrorAs(t, err, &re)
+	require.Equal(t, http.StatusBadRequest, re.Status)
+}
+
+func TestStrictRequestResolver_LegacyRuntimeKeyBodyReturnsBadRequest(t *testing.T) {
+	r := newResolverWithProfiles(t)
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","runtime_key":"analyst"}`))
+
+	_, err := r.Resolve(req)
+	require.Error(t, err)
+	var re *webhttp.RequestResolutionError
+	require.ErrorAs(t, err, &re)
+	require.Equal(t, http.StatusBadRequest, re.Status)
 }
 
 func TestStrictRequestResolver_RequestOverridesAreValidatedByPolicy(t *testing.T) {

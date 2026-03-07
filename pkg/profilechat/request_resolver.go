@@ -24,7 +24,8 @@ type strictChatRequestBody struct {
 	ConvID           string         `json:"conv_id"`
 	Profile          string         `json:"profile,omitempty"`
 	Registry         string         `json:"registry,omitempty"`
-	RegistrySlug     string         `json:"registry_slug,omitempty"`
+	LegacyRuntimeKey string         `json:"runtime_key,omitempty"`
+	LegacyRegistry   string         `json:"registry_slug,omitempty"`
 	RequestOverrides map[string]any `json:"request_overrides"`
 	IdempotencyKey   string         `json:"idempotency_key,omitempty"`
 }
@@ -85,11 +86,14 @@ func (r *StrictRequestResolver) resolveWS(req *http.Request) (webhttp.ResolvedCo
 	var resolvedRuntime *gepprofiles.RuntimeSpec
 	var profileVersion uint64
 	if r.profileRegistry != nil {
+		if err := rejectLegacySelectionFields(req, "", ""); err != nil {
+			return webhttp.ResolvedConversationRequest{}, err
+		}
 		profileSlug, err := r.resolveProfileSelection(req, "")
 		if err != nil {
 			return webhttp.ResolvedConversationRequest{}, err
 		}
-		registrySlug, err := r.resolveRegistrySelection(req, "", "")
+		registrySlug, err := r.resolveRegistrySelection(req, "")
 		if err != nil {
 			return webhttp.ResolvedConversationRequest{}, err
 		}
@@ -124,6 +128,9 @@ func (r *StrictRequestResolver) resolveChat(req *http.Request) (webhttp.Resolved
 	if body.Prompt == "" && body.Text != "" {
 		body.Prompt = body.Text
 	}
+	if err := rejectLegacySelectionFields(req, body.LegacyRuntimeKey, body.LegacyRegistry); err != nil {
+		return webhttp.ResolvedConversationRequest{}, err
+	}
 
 	convID := strings.TrimSpace(body.ConvID)
 	if convID == "" {
@@ -138,7 +145,7 @@ func (r *StrictRequestResolver) resolveChat(req *http.Request) (webhttp.Resolved
 		if err != nil {
 			return webhttp.ResolvedConversationRequest{}, err
 		}
-		registrySlug, err := r.resolveRegistrySelection(req, body.Registry, body.RegistrySlug)
+		registrySlug, err := r.resolveRegistrySelection(req, body.Registry)
 		if err != nil {
 			return webhttp.ResolvedConversationRequest{}, err
 		}
@@ -193,7 +200,6 @@ func (r *StrictRequestResolver) resolveProfileSelection(req *http.Request, bodyP
 func (r *StrictRequestResolver) resolveRegistrySelection(
 	req *http.Request,
 	bodyRegistryRaw string,
-	bodyLegacyRegistryRaw string,
 ) (gepprofiles.RegistrySlug, error) {
 	if r == nil || r.profileRegistry == nil {
 		return "", &webhttp.RequestResolutionError{
@@ -203,14 +209,8 @@ func (r *StrictRequestResolver) resolveRegistrySelection(
 	}
 
 	registryRaw := strings.TrimSpace(bodyRegistryRaw)
-	if registryRaw == "" {
-		registryRaw = strings.TrimSpace(bodyLegacyRegistryRaw)
-	}
 	if registryRaw == "" && req != nil {
 		registryRaw = strings.TrimSpace(req.URL.Query().Get("registry"))
-	}
-	if registryRaw == "" && req != nil {
-		registryRaw = strings.TrimSpace(req.URL.Query().Get("registry_slug"))
 	}
 	if registryRaw == "" {
 		return r.defaultRegistrySlug, nil
@@ -218,7 +218,11 @@ func (r *StrictRequestResolver) resolveRegistrySelection(
 
 	registrySlug, err := gepprofiles.ParseRegistrySlug(registryRaw)
 	if err != nil {
-		return r.defaultRegistrySlug, nil
+		return "", &webhttp.RequestResolutionError{
+			Status:    http.StatusBadRequest,
+			ClientMsg: "invalid registry: " + registryRaw,
+			Err:       err,
+		}
 	}
 	return registrySlug, nil
 }
@@ -240,14 +244,41 @@ func (r *StrictRequestResolver) resolveEffectiveProfile(
 		}
 	}
 	resolved, err := r.profileRegistry.ResolveEffectiveProfile(ctx, in)
-	if err != nil && errors.Is(err, gepprofiles.ErrRegistryNotFound) && !registrySlug.IsZero() && registrySlug != r.defaultRegistrySlug {
-		in.RegistrySlug = r.defaultRegistrySlug
-		resolved, err = r.profileRegistry.ResolveEffectiveProfile(ctx, in)
-	}
 	if err != nil {
 		return nil, r.toRequestResolutionError(err, profileSlug.String())
 	}
 	return resolved, nil
+}
+
+func rejectLegacySelectionFields(req *http.Request, legacyRuntimeKey string, legacyRegistry string) error {
+	if req != nil {
+		query := req.URL.Query()
+		if _, ok := query["runtime_key"]; ok {
+			return &webhttp.RequestResolutionError{
+				Status:    http.StatusBadRequest,
+				ClientMsg: "unsupported legacy selector: runtime_key",
+			}
+		}
+		if _, ok := query["registry_slug"]; ok {
+			return &webhttp.RequestResolutionError{
+				Status:    http.StatusBadRequest,
+				ClientMsg: "unsupported legacy selector: registry_slug",
+			}
+		}
+	}
+	if strings.TrimSpace(legacyRuntimeKey) != "" {
+		return &webhttp.RequestResolutionError{
+			Status:    http.StatusBadRequest,
+			ClientMsg: "unsupported legacy selector: runtime_key",
+		}
+	}
+	if strings.TrimSpace(legacyRegistry) != "" {
+		return &webhttp.RequestResolutionError{
+			Status:    http.StatusBadRequest,
+			ClientMsg: "unsupported legacy selector: registry_slug",
+		}
+	}
+	return nil
 }
 
 func profileVersionFromResolvedMetadata(metadata map[string]any) uint64 {
