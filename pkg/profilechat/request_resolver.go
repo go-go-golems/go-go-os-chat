@@ -23,6 +23,8 @@ type strictChatRequestBody struct {
 	Text             string         `json:"text,omitempty"`
 	ConvID           string         `json:"conv_id"`
 	Profile          string         `json:"profile,omitempty"`
+	Registry         string         `json:"registry,omitempty"`
+	RegistrySlug     string         `json:"registry_slug,omitempty"`
 	RequestOverrides map[string]any `json:"request_overrides"`
 	IdempotencyKey   string         `json:"idempotency_key,omitempty"`
 }
@@ -87,7 +89,11 @@ func (r *StrictRequestResolver) resolveWS(req *http.Request) (webhttp.ResolvedCo
 		if err != nil {
 			return webhttp.ResolvedConversationRequest{}, err
 		}
-		resolvedProfile, err := r.resolveEffectiveProfile(context.Background(), profileSlug, nil)
+		registrySlug, err := r.resolveRegistrySelection(req, "", "")
+		if err != nil {
+			return webhttp.ResolvedConversationRequest{}, err
+		}
+		resolvedProfile, err := r.resolveEffectiveProfile(context.Background(), registrySlug, profileSlug, nil)
 		if err != nil {
 			return webhttp.ResolvedConversationRequest{}, err
 		}
@@ -132,7 +138,11 @@ func (r *StrictRequestResolver) resolveChat(req *http.Request) (webhttp.Resolved
 		if err != nil {
 			return webhttp.ResolvedConversationRequest{}, err
 		}
-		resolvedProfile, err := r.resolveEffectiveProfile(context.Background(), profileSlug, body.RequestOverrides)
+		registrySlug, err := r.resolveRegistrySelection(req, body.Registry, body.RegistrySlug)
+		if err != nil {
+			return webhttp.ResolvedConversationRequest{}, err
+		}
+		resolvedProfile, err := r.resolveEffectiveProfile(context.Background(), registrySlug, profileSlug, body.RequestOverrides)
 		if err != nil {
 			return webhttp.ResolvedConversationRequest{}, err
 		}
@@ -180,12 +190,47 @@ func (r *StrictRequestResolver) resolveProfileSelection(req *http.Request, bodyP
 	return slug, nil
 }
 
+func (r *StrictRequestResolver) resolveRegistrySelection(
+	req *http.Request,
+	bodyRegistryRaw string,
+	bodyLegacyRegistryRaw string,
+) (gepprofiles.RegistrySlug, error) {
+	if r == nil || r.profileRegistry == nil {
+		return "", &webhttp.RequestResolutionError{
+			Status:    http.StatusInternalServerError,
+			ClientMsg: "profile resolver is not configured",
+		}
+	}
+
+	registryRaw := strings.TrimSpace(bodyRegistryRaw)
+	if registryRaw == "" {
+		registryRaw = strings.TrimSpace(bodyLegacyRegistryRaw)
+	}
+	if registryRaw == "" && req != nil {
+		registryRaw = strings.TrimSpace(req.URL.Query().Get("registry"))
+	}
+	if registryRaw == "" && req != nil {
+		registryRaw = strings.TrimSpace(req.URL.Query().Get("registry_slug"))
+	}
+	if registryRaw == "" {
+		return r.defaultRegistrySlug, nil
+	}
+
+	registrySlug, err := gepprofiles.ParseRegistrySlug(registryRaw)
+	if err != nil {
+		return r.defaultRegistrySlug, nil
+	}
+	return registrySlug, nil
+}
+
 func (r *StrictRequestResolver) resolveEffectiveProfile(
 	ctx context.Context,
+	registrySlug gepprofiles.RegistrySlug,
 	profileSlug gepprofiles.ProfileSlug,
 	requestOverrides map[string]any,
 ) (*gepprofiles.ResolvedProfile, error) {
 	in := gepprofiles.ResolveInput{
+		RegistrySlug:     registrySlug,
 		ProfileSlug:      profileSlug,
 		RequestOverrides: requestOverrides,
 	}
@@ -195,6 +240,10 @@ func (r *StrictRequestResolver) resolveEffectiveProfile(
 		}
 	}
 	resolved, err := r.profileRegistry.ResolveEffectiveProfile(ctx, in)
+	if err != nil && errors.Is(err, gepprofiles.ErrRegistryNotFound) && !registrySlug.IsZero() && registrySlug != r.defaultRegistrySlug {
+		in.RegistrySlug = r.defaultRegistrySlug
+		resolved, err = r.profileRegistry.ResolveEffectiveProfile(ctx, in)
+	}
 	if err != nil {
 		return nil, r.toRequestResolutionError(err, profileSlug.String())
 	}

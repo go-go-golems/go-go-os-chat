@@ -93,7 +93,7 @@ func TestStrictRequestResolver_InvalidProfileReturnsBadRequest(t *testing.T) {
 
 func TestStrictRequestResolver_UnknownRegistryQueryIsIgnored(t *testing.T) {
 	r := newResolverWithProfiles(t)
-	req := httptest.NewRequest(http.MethodPost, "/chat?registry_slug=missing", strings.NewReader(`{"prompt":"hi"}`))
+	req := httptest.NewRequest(http.MethodPost, "/chat?registry=missing", strings.NewReader(`{"prompt":"hi"}`))
 
 	plan, err := r.Resolve(req)
 	require.NoError(t, err)
@@ -101,6 +101,24 @@ func TestStrictRequestResolver_UnknownRegistryQueryIsIgnored(t *testing.T) {
 }
 
 func TestStrictRequestResolver_InvalidRegistryInBodyIsIgnored(t *testing.T) {
+	r := newResolverWithProfiles(t)
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","registry":"invalid registry!","profile":"analyst"}`))
+
+	plan, err := r.Resolve(req)
+	require.NoError(t, err)
+	require.Equal(t, "analyst", plan.RuntimeKey)
+}
+
+func TestStrictRequestResolver_LegacyRegistrySlugQueryAliasStillWorks(t *testing.T) {
+	r := newResolverWithProfiles(t)
+	req := httptest.NewRequest(http.MethodPost, "/chat?registry_slug=missing", strings.NewReader(`{"prompt":"hi"}`))
+
+	plan, err := r.Resolve(req)
+	require.NoError(t, err)
+	require.Equal(t, "inventory", plan.RuntimeKey)
+}
+
+func TestStrictRequestResolver_LegacyRegistrySlugBodyAliasStillWorks(t *testing.T) {
 	r := newResolverWithProfiles(t)
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"hi","registry_slug":"invalid registry!","profile":"analyst"}`))
 
