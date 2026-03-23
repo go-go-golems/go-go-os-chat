@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
+	gepprofiles "github.com/go-go-golems/geppetto/pkg/engineprofiles"
 	"github.com/go-go-golems/geppetto/pkg/inference/middlewarecfg"
-	gepprofiles "github.com/go-go-golems/geppetto/pkg/profiles"
 	webchat "github.com/go-go-golems/pinocchio/pkg/webchat"
 	webhttp "github.com/go-go-golems/pinocchio/pkg/webchat/http"
 	plzconfirmbackend "github.com/go-go-golems/plz-confirm/pkg/backend"
@@ -20,8 +20,6 @@ type ProfileAPIOptions struct {
 	Registry                        gepprofiles.Registry
 	DefaultRegistrySlug             gepprofiles.RegistrySlug
 	MiddlewareDefinitions           middlewarecfg.DefinitionRegistry
-	WriteActor                      string
-	WriteSource                     string
 	EnableCurrentProfileCookieRoute bool
 }
 
@@ -93,8 +91,6 @@ func (c *Component) MountRoutes(mux *http.ServeMux) error {
 		webhttp.RegisterProfileAPIHandlers(mux, c.profileAPI.Registry, webhttp.ProfileAPIHandlerOptions{
 			DefaultRegistrySlug:             c.profileAPI.DefaultRegistrySlug,
 			EnableCurrentProfileCookieRoute: c.profileAPI.EnableCurrentProfileCookieRoute,
-			WriteActor:                      c.profileAPI.WriteActor,
-			WriteSource:                     c.profileAPI.WriteSource,
 			MiddlewareDefinitions:           c.profileAPI.MiddlewareDefinitions,
 		})
 	}
