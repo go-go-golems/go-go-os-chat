@@ -9,7 +9,6 @@ import (
 	embeddingscfg "github.com/go-go-golems/geppetto/pkg/embeddings/config"
 	"github.com/go-go-golems/geppetto/pkg/inference/middleware"
 	"github.com/go-go-golems/geppetto/pkg/inference/middlewarecfg"
-	gepprofiles "github.com/go-go-golems/geppetto/pkg/profiles"
 	"github.com/go-go-golems/geppetto/pkg/steps/ai/settings"
 	"github.com/go-go-golems/geppetto/pkg/steps/ai/settings/claude"
 	"github.com/go-go-golems/geppetto/pkg/steps/ai/settings/gemini"
@@ -132,8 +131,8 @@ func TestRuntimeComposer_AppliesProfileMiddlewaresWithResolverCoercion(t *testin
 
 	_, err := composer.Compose(context.Background(), infruntime.ConversationRuntimeRequest{
 		ProfileKey: "inventory",
-		ResolvedProfileRuntime: &gepprofiles.RuntimeSpec{
-			Middlewares: []gepprofiles.MiddlewareUse{
+		ResolvedProfileRuntime: &infruntime.ProfileRuntime{
+			Middlewares: []infruntime.MiddlewareUse{
 				{
 					Name: "inventory_artifact_policy",
 					ID:   "policy",
@@ -177,15 +176,15 @@ func TestRuntimeComposer_ExplicitEmptyProfileMiddlewaresDoNotFallback(t *testing
 		RuntimeComposerOptions{RuntimeKey: "inventory"},
 		newRuntimeComposerDefinitionRegistry(t, def),
 		middlewarecfg.BuildDeps{},
-		[]gepprofiles.MiddlewareUse{
+		[]infruntime.MiddlewareUse{
 			{Name: "inventory_artifact_policy", ID: "default"},
 		},
 	)
 
 	_, err := composer.Compose(context.Background(), infruntime.ConversationRuntimeRequest{
 		ProfileKey: "default",
-		ResolvedProfileRuntime: &gepprofiles.RuntimeSpec{
-			Middlewares: []gepprofiles.MiddlewareUse{},
+		ResolvedProfileRuntime: &infruntime.ProfileRuntime{
+			Middlewares: []infruntime.MiddlewareUse{},
 		},
 	})
 	if err != nil {
@@ -217,8 +216,8 @@ func TestRuntimeComposer_RejectsInvalidMiddlewareSchemaPayload(t *testing.T) {
 
 	_, err := composer.Compose(context.Background(), infruntime.ConversationRuntimeRequest{
 		ProfileKey: "inventory",
-		ResolvedProfileRuntime: &gepprofiles.RuntimeSpec{
-			Middlewares: []gepprofiles.MiddlewareUse{
+		ResolvedProfileRuntime: &infruntime.ProfileRuntime{
+			Middlewares: []infruntime.MiddlewareUse{
 				{
 					Name: "inventory_artifact_policy",
 					Config: map[string]any{
@@ -239,7 +238,7 @@ func TestRuntimeComposer_RejectsInvalidMiddlewareSchemaPayload(t *testing.T) {
 	}
 }
 
-func TestRuntimeComposer_AppliesProfileStepSettingsPatch(t *testing.T) {
+func TestRuntimeComposer_UsesResolvedInferenceSettingsInFingerprint(t *testing.T) {
 	composer := NewRuntimeComposerWithDefinitions(
 		minimalRuntimeComposerValues(t),
 		RuntimeComposerOptions{RuntimeKey: "inventory"},
@@ -250,13 +249,10 @@ func TestRuntimeComposer_AppliesProfileStepSettingsPatch(t *testing.T) {
 
 	res, err := composer.Compose(context.Background(), infruntime.ConversationRuntimeRequest{
 		ProfileKey: "inventory",
-		ResolvedProfileRuntime: &gepprofiles.RuntimeSpec{
-			StepSettingsPatch: map[string]any{
-				"ai-chat": map[string]any{
-					"ai-engine": "patched-engine",
-				},
-			},
-		},
+		ResolvedInferenceSettings: testInferenceSettingsWithEngine(
+			t,
+			"patched-engine",
+		),
 	})
 	if err != nil {
 		t.Fatalf("compose failed: %v", err)
@@ -271,7 +267,7 @@ func TestRuntimeComposer_AppliesProfileStepSettingsPatch(t *testing.T) {
 		t.Fatalf("missing step_metadata in runtime fingerprint: %#v", payload)
 	}
 	if got, want := stepMeta["ai-engine"], "patched-engine"; got != want {
-		t.Fatalf("step_settings_patch not applied: got=%#v want=%#v", got, want)
+		t.Fatalf("resolved inference settings not applied: got=%#v want=%#v", got, want)
 	}
 }
 
@@ -313,7 +309,19 @@ func TestRuntimeComposer_AppendsConversationContextPrompt(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.RuntimeFingerprint), &payload); err != nil {
 		t.Fatalf("unmarshal runtime fingerprint: %v", err)
 	}
-	if got := payload["context_addendum"]; got == nil || !strings.Contains(got.(string), "app_id: sqlite") {
-		t.Fatalf("missing context addendum in runtime fingerprint: %#v", payload)
+	if got, _ := payload["system_prompt"].(string); !strings.Contains(got, "app_id: sqlite") {
+		t.Fatalf("missing context addendum in runtime fingerprint payload: %#v", payload)
 	}
+}
+
+func testInferenceSettingsWithEngine(t *testing.T, engine string) *settings.InferenceSettings {
+	t.Helper()
+
+	inferenceSettings, err := settings.NewInferenceSettings()
+	if err != nil {
+		t.Fatalf("new inference settings: %v", err)
+	}
+	inferenceSettings.Chat.Engine = &engine
+	inferenceSettings.API.APIKeys["openai-api-key"] = "test-api-key"
+	return inferenceSettings
 }

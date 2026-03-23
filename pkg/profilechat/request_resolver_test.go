@@ -7,7 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	gepprofiles "github.com/go-go-golems/geppetto/pkg/profiles"
+	gepprofiles "github.com/go-go-golems/geppetto/pkg/engineprofiles"
+	infruntime "github.com/go-go-golems/pinocchio/pkg/inference/runtime"
 	webhttp "github.com/go-go-golems/pinocchio/pkg/webchat/http"
 	"github.com/stretchr/testify/require"
 )
@@ -160,28 +161,13 @@ func TestStrictRequestResolver_RequestOverridesAreValidatedByPolicy(t *testing.T
 func newResolverWithProfiles(t *testing.T) *StrictRequestResolver {
 	t.Helper()
 
-	store := gepprofiles.NewInMemoryProfileStore()
-	registry := &gepprofiles.ProfileRegistry{
-		Slug:               gepprofiles.MustRegistrySlug("default"),
-		DefaultProfileSlug: gepprofiles.MustProfileSlug("inventory"),
-		Profiles: map[gepprofiles.ProfileSlug]*gepprofiles.Profile{
-			gepprofiles.MustProfileSlug("inventory"): {
-				Slug: gepprofiles.MustProfileSlug("inventory"),
-				Runtime: gepprofiles.RuntimeSpec{
-					SystemPrompt: "Inventory system",
-				},
-				Metadata: gepprofiles.ProfileMetadata{Version: 3},
-			},
-			gepprofiles.MustProfileSlug("analyst"): {
-				Slug: gepprofiles.MustProfileSlug("analyst"),
-				Runtime: gepprofiles.RuntimeSpec{
-					SystemPrompt: "Analyst system",
-				},
-				Policy: gepprofiles.PolicySpec{
-					AllowOverrides: true,
-				},
-				Metadata: gepprofiles.ProfileMetadata{Version: 7},
-			},
+	store := gepprofiles.NewInMemoryEngineProfileStore()
+	registry := &gepprofiles.EngineProfileRegistry{
+		Slug:                     gepprofiles.MustRegistrySlug("default"),
+		DefaultEngineProfileSlug: gepprofiles.MustEngineProfileSlug("inventory"),
+		Profiles: map[gepprofiles.EngineProfileSlug]*gepprofiles.EngineProfile{
+			gepprofiles.MustEngineProfileSlug("inventory"): testEngineProfileWithRuntime(t, "inventory", 3, "Inventory system"),
+			gepprofiles.MustEngineProfileSlug("analyst"):   testEngineProfileWithRuntime(t, "analyst", 7, "Analyst system"),
 		},
 	}
 	require.NoError(t, gepprofiles.ValidateRegistry(registry))
@@ -193,4 +179,17 @@ func newResolverWithProfiles(t *testing.T) *StrictRequestResolver {
 	svc, err := gepprofiles.NewStoreRegistry(store, gepprofiles.MustRegistrySlug("default"))
 	require.NoError(t, err)
 	return NewStrictRequestResolver("inventory").WithProfileRegistry(svc, gepprofiles.MustRegistrySlug("default"))
+}
+
+func testEngineProfileWithRuntime(t *testing.T, slug string, version uint64, systemPrompt string) *gepprofiles.EngineProfile {
+	t.Helper()
+
+	profile := &gepprofiles.EngineProfile{
+		Slug:     gepprofiles.MustEngineProfileSlug(slug),
+		Metadata: gepprofiles.EngineProfileMetadata{Version: version},
+	}
+	require.NoError(t, infruntime.SetProfileRuntime(profile, &infruntime.ProfileRuntime{
+		SystemPrompt: systemPrompt,
+	}))
+	return profile
 }

@@ -7,15 +7,18 @@ import (
 	"net/http"
 	"strings"
 
-	gepprofiles "github.com/go-go-golems/geppetto/pkg/profiles"
+	gepprofiles "github.com/go-go-golems/geppetto/pkg/engineprofiles"
+	aisettings "github.com/go-go-golems/geppetto/pkg/steps/ai/settings"
+	infruntime "github.com/go-go-golems/pinocchio/pkg/inference/runtime"
 	webhttp "github.com/go-go-golems/pinocchio/pkg/webchat/http"
 	"github.com/google/uuid"
 )
 
 type StrictRequestResolver struct {
-	runtimeKey          string
-	profileRegistry     gepprofiles.Registry
-	defaultRegistrySlug gepprofiles.RegistrySlug
+	runtimeKey           string
+	profileRegistry      gepprofiles.Registry
+	defaultRegistrySlug  gepprofiles.RegistrySlug
+	baseInferenceSetting *aisettings.InferenceSettings
 }
 
 type strictChatRequestBody struct {
@@ -28,6 +31,24 @@ type strictChatRequestBody struct {
 	LegacyRegistry   string         `json:"registry_slug,omitempty"`
 	RequestOverrides map[string]any `json:"request_overrides"`
 	IdempotencyKey   string         `json:"idempotency_key,omitempty"`
+}
+
+type resolvedConversationPlan struct {
+	ConvID         string
+	Prompt         string
+	IdempotencyKey string
+	Runtime        *resolvedConversationRuntime
+}
+
+type resolvedConversationRuntime struct {
+	SystemPrompt       string
+	Middlewares        []infruntime.MiddlewareUse
+	ToolNames          []string
+	RuntimeKey         string
+	RuntimeFingerprint string
+	ProfileVersion     uint64
+	InferenceSettings  *aisettings.InferenceSettings
+	ProfileMetadata    map[string]any
 }
 
 func NewStrictRequestResolver(runtimeKey string) *StrictRequestResolver {
@@ -49,6 +70,18 @@ func (r *StrictRequestResolver) WithProfileRegistry(profileRegistry gepprofiles.
 	if !registrySlug.IsZero() {
 		r.defaultRegistrySlug = registrySlug
 	}
+	return r
+}
+
+func (r *StrictRequestResolver) WithBaseInferenceSettings(base *aisettings.InferenceSettings) *StrictRequestResolver {
+	if r == nil {
+		return nil
+	}
+	if base == nil {
+		r.baseInferenceSetting = nil
+		return r
+	}
+	r.baseInferenceSetting = base.Clone()
 	return r
 }
 
@@ -82,38 +115,34 @@ func (r *StrictRequestResolver) resolveWS(req *http.Request) (webhttp.ResolvedCo
 		}
 	}
 
-	runtimeKey := r.runtimeKey
-	var resolvedRuntime *gepprofiles.RuntimeSpec
-	var profileVersion uint64
-	if r.profileRegistry != nil {
-		if err := rejectLegacySelectionFields(req, "", ""); err != nil {
-			return webhttp.ResolvedConversationRequest{}, err
-		}
-		profileSlug, err := r.resolveProfileSelection(req, "")
-		if err != nil {
-			return webhttp.ResolvedConversationRequest{}, err
-		}
-		registrySlug, err := r.resolveRegistrySelection(req, "")
-		if err != nil {
-			return webhttp.ResolvedConversationRequest{}, err
-		}
-		resolvedProfile, err := r.resolveEffectiveProfile(context.Background(), registrySlug, profileSlug, nil)
-		if err != nil {
-			return webhttp.ResolvedConversationRequest{}, err
-		}
-		runtime := resolvedProfile.EffectiveRuntime
-		resolvedRuntime = &runtime
-		runtimeKey = resolvedProfile.RuntimeKey.String()
-		profileVersion = profileVersionFromResolvedMetadata(resolvedProfile.Metadata)
+	if err := rejectLegacySelectionFields(req, "", ""); err != nil {
+		return webhttp.ResolvedConversationRequest{}, err
 	}
 
-	return webhttp.ResolvedConversationRequest{
-		ConvID:          convID,
-		RuntimeKey:      runtimeKey,
-		ProfileVersion:  profileVersion,
-		ResolvedRuntime: resolvedRuntime,
-		Overrides:       nil,
-	}, nil
+	if r.profileRegistry == nil {
+		return webhttp.ResolvedConversationRequest{
+			ConvID:     convID,
+			RuntimeKey: r.runtimeKey,
+		}, nil
+	}
+
+	profileSlug, err := r.resolveProfileSelection(req, "")
+	if err != nil {
+		return webhttp.ResolvedConversationRequest{}, err
+	}
+	registrySlug, err := r.resolveRegistrySelection(req, "")
+	if err != nil {
+		return webhttp.ResolvedConversationRequest{}, err
+	}
+	resolvedProfile, err := r.resolveEffectiveProfile(context.Background(), registrySlug, profileSlug)
+	if err != nil {
+		return webhttp.ResolvedConversationRequest{}, err
+	}
+	plan, err := r.buildConversationPlan(context.Background(), convID, "", "", resolvedProfile)
+	if err != nil {
+		return webhttp.ResolvedConversationRequest{}, err
+	}
+	return toResolvedConversationRequest(plan), nil
 }
 
 func (r *StrictRequestResolver) resolveChat(req *http.Request) (webhttp.ResolvedConversationRequest, error) {
@@ -131,46 +160,47 @@ func (r *StrictRequestResolver) resolveChat(req *http.Request) (webhttp.Resolved
 	if err := rejectLegacySelectionFields(req, body.LegacyRuntimeKey, body.LegacyRegistry); err != nil {
 		return webhttp.ResolvedConversationRequest{}, err
 	}
+	if len(body.RequestOverrides) > 0 {
+		return webhttp.ResolvedConversationRequest{}, &webhttp.RequestResolutionError{
+			Status:    http.StatusBadRequest,
+			ClientMsg: "unsupported request_overrides",
+		}
+	}
 
 	convID := strings.TrimSpace(body.ConvID)
 	if convID == "" {
 		convID = uuid.NewString()
 	}
 
-	runtimeKey := r.runtimeKey
-	var resolvedRuntime *gepprofiles.RuntimeSpec
-	var profileVersion uint64
-	if r.profileRegistry != nil {
-		profileSlug, err := r.resolveProfileSelection(req, body.Profile)
-		if err != nil {
-			return webhttp.ResolvedConversationRequest{}, err
-		}
-		registrySlug, err := r.resolveRegistrySelection(req, body.Registry)
-		if err != nil {
-			return webhttp.ResolvedConversationRequest{}, err
-		}
-		resolvedProfile, err := r.resolveEffectiveProfile(context.Background(), registrySlug, profileSlug, body.RequestOverrides)
-		if err != nil {
-			return webhttp.ResolvedConversationRequest{}, err
-		}
-		runtime := resolvedProfile.EffectiveRuntime
-		resolvedRuntime = &runtime
-		runtimeKey = resolvedProfile.RuntimeKey.String()
-		profileVersion = profileVersionFromResolvedMetadata(resolvedProfile.Metadata)
+	if r.profileRegistry == nil {
+		return webhttp.ResolvedConversationRequest{
+			ConvID:         convID,
+			RuntimeKey:     r.runtimeKey,
+			Prompt:         body.Prompt,
+			IdempotencyKey: strings.TrimSpace(body.IdempotencyKey),
+		}, nil
 	}
 
-	return webhttp.ResolvedConversationRequest{
-		ConvID:          convID,
-		RuntimeKey:      runtimeKey,
-		ProfileVersion:  profileVersion,
-		ResolvedRuntime: resolvedRuntime,
-		Prompt:          body.Prompt,
-		Overrides:       nil,
-		IdempotencyKey:  strings.TrimSpace(body.IdempotencyKey),
-	}, nil
+	profileSlug, err := r.resolveProfileSelection(req, body.Profile)
+	if err != nil {
+		return webhttp.ResolvedConversationRequest{}, err
+	}
+	registrySlug, err := r.resolveRegistrySelection(req, body.Registry)
+	if err != nil {
+		return webhttp.ResolvedConversationRequest{}, err
+	}
+	resolvedProfile, err := r.resolveEffectiveProfile(context.Background(), registrySlug, profileSlug)
+	if err != nil {
+		return webhttp.ResolvedConversationRequest{}, err
+	}
+	plan, err := r.buildConversationPlan(context.Background(), convID, body.Prompt, strings.TrimSpace(body.IdempotencyKey), resolvedProfile)
+	if err != nil {
+		return webhttp.ResolvedConversationRequest{}, err
+	}
+	return toResolvedConversationRequest(plan), nil
 }
 
-func (r *StrictRequestResolver) resolveProfileSelection(req *http.Request, bodyProfileRaw string) (gepprofiles.ProfileSlug, error) {
+func (r *StrictRequestResolver) resolveProfileSelection(req *http.Request, bodyProfileRaw string) (gepprofiles.EngineProfileSlug, error) {
 	if r == nil || r.profileRegistry == nil {
 		return "", &webhttp.RequestResolutionError{
 			Status:    http.StatusInternalServerError,
@@ -182,11 +212,11 @@ func (r *StrictRequestResolver) resolveProfileSelection(req *http.Request, bodyP
 	if slugRaw == "" && req != nil {
 		slugRaw = strings.TrimSpace(req.URL.Query().Get("profile"))
 	}
-	if strings.TrimSpace(slugRaw) == "" {
+	if slugRaw == "" {
 		return "", nil
 	}
 
-	slug, err := gepprofiles.ParseProfileSlug(slugRaw)
+	slug, err := gepprofiles.ParseEngineProfileSlug(slugRaw)
 	if err != nil {
 		return "", &webhttp.RequestResolutionError{
 			Status:    http.StatusBadRequest,
@@ -197,10 +227,7 @@ func (r *StrictRequestResolver) resolveProfileSelection(req *http.Request, bodyP
 	return slug, nil
 }
 
-func (r *StrictRequestResolver) resolveRegistrySelection(
-	req *http.Request,
-	bodyRegistryRaw string,
-) (gepprofiles.RegistrySlug, error) {
+func (r *StrictRequestResolver) resolveRegistrySelection(req *http.Request, bodyRegistryRaw string) (gepprofiles.RegistrySlug, error) {
 	if r == nil || r.profileRegistry == nil {
 		return "", &webhttp.RequestResolutionError{
 			Status:    http.StatusInternalServerError,
@@ -230,24 +257,148 @@ func (r *StrictRequestResolver) resolveRegistrySelection(
 func (r *StrictRequestResolver) resolveEffectiveProfile(
 	ctx context.Context,
 	registrySlug gepprofiles.RegistrySlug,
-	profileSlug gepprofiles.ProfileSlug,
-	requestOverrides map[string]any,
-) (*gepprofiles.ResolvedProfile, error) {
+	profileSlug gepprofiles.EngineProfileSlug,
+) (*gepprofiles.ResolvedEngineProfile, error) {
 	in := gepprofiles.ResolveInput{
-		RegistrySlug:     registrySlug,
-		ProfileSlug:      profileSlug,
-		RequestOverrides: requestOverrides,
+		RegistrySlug:      registrySlug,
+		EngineProfileSlug: profileSlug,
 	}
-	if !profileSlug.IsZero() {
-		if runtimeKey, err := gepprofiles.ParseRuntimeKey(profileSlug.String()); err == nil {
-			in.RuntimeKeyFallback = runtimeKey
-		}
-	}
-	resolved, err := r.profileRegistry.ResolveEffectiveProfile(ctx, in)
+	resolved, err := r.profileRegistry.ResolveEngineProfile(ctx, in)
 	if err != nil {
 		return nil, r.toRequestResolutionError(err, profileSlug.String())
 	}
 	return resolved, nil
+}
+
+func cloneResolvedInferenceSettings(in *aisettings.InferenceSettings) *aisettings.InferenceSettings {
+	if in == nil {
+		return nil
+	}
+	return in.Clone()
+}
+
+func resolvedInferenceSettingsForRequest(resolved *gepprofiles.ResolvedEngineProfile, base *aisettings.InferenceSettings) (*aisettings.InferenceSettings, error) {
+	if resolved == nil || resolved.InferenceSettings == nil {
+		return cloneResolvedInferenceSettings(base), nil
+	}
+	merged, err := gepprofiles.MergeInferenceSettings(base, resolved.InferenceSettings)
+	if err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
+func (r *StrictRequestResolver) buildConversationPlan(
+	ctx context.Context,
+	convID string,
+	prompt string,
+	idempotencyKey string,
+	resolvedProfile *gepprofiles.ResolvedEngineProfile,
+) (*resolvedConversationPlan, error) {
+	runtimePolicy, err := r.resolveProfileRuntime(ctx, resolvedProfile)
+	if err != nil {
+		return nil, err
+	}
+	runtimeKey := r.runtimeKey
+	if resolvedProfile != nil && strings.TrimSpace(resolvedProfile.EngineProfileSlug.String()) != "" {
+		runtimeKey = strings.TrimSpace(resolvedProfile.EngineProfileSlug.String())
+	}
+	if runtimeKey == "" {
+		runtimeKey = "default"
+	}
+	profileVersion := profileVersionFromResolvedMetadata(nil)
+	profileMetadata := map[string]any(nil)
+	if resolvedProfile != nil {
+		profileVersion = profileVersionFromResolvedMetadata(resolvedProfile.Metadata)
+		profileMetadata = copyMetadataMap(resolvedProfile.Metadata)
+	}
+	inferenceSettings, err := resolvedInferenceSettingsForRequest(resolvedProfile, r.baseInferenceSetting)
+	if err != nil {
+		return nil, &webhttp.RequestResolutionError{
+			Status:    http.StatusInternalServerError,
+			ClientMsg: "failed to merge inference settings",
+			Err:       err,
+		}
+	}
+
+	runtime := &resolvedConversationRuntime{
+		RuntimeKey:        runtimeKey,
+		ProfileVersion:    profileVersion,
+		InferenceSettings: inferenceSettings,
+		ProfileMetadata:   profileMetadata,
+	}
+	if runtimePolicy != nil {
+		runtime.SystemPrompt = strings.TrimSpace(runtimePolicy.SystemPrompt)
+		runtime.Middlewares = append([]infruntime.MiddlewareUse(nil), runtimePolicy.Middlewares...)
+		runtime.ToolNames = append([]string(nil), runtimePolicy.Tools...)
+	}
+	runtime.RuntimeFingerprint = buildResolvedRuntimeFingerprint(runtime.RuntimeKey, runtime.ProfileVersion, runtime, runtime.InferenceSettings)
+
+	return &resolvedConversationPlan{
+		ConvID:         convID,
+		Prompt:         prompt,
+		IdempotencyKey: idempotencyKey,
+		Runtime:        runtime,
+	}, nil
+}
+
+func (r *StrictRequestResolver) resolveProfileRuntime(ctx context.Context, resolved *gepprofiles.ResolvedEngineProfile) (*infruntime.ProfileRuntime, error) {
+	if r == nil || r.profileRegistry == nil || resolved == nil {
+		return nil, nil
+	}
+	profile, err := r.profileRegistry.GetEngineProfile(ctx, resolved.RegistrySlug, resolved.EngineProfileSlug)
+	if err != nil {
+		return nil, r.toRequestResolutionError(err, resolved.EngineProfileSlug.String())
+	}
+	runtime, _, err := infruntime.ProfileRuntimeFromEngineProfile(profile)
+	if err != nil {
+		return nil, &webhttp.RequestResolutionError{
+			Status:    http.StatusBadRequest,
+			ClientMsg: "invalid pinocchio runtime extension",
+			Err:       err,
+		}
+	}
+	return runtime, nil
+}
+
+func buildResolvedRuntimeFingerprint(
+	runtimeKey string,
+	profileVersion uint64,
+	runtime *resolvedConversationRuntime,
+	inferenceSettings *aisettings.InferenceSettings,
+) string {
+	if runtime == nil {
+		return buildRuntimeFingerprint(runtimeKey, profileVersion, "", nil, nil, inferenceSettings)
+	}
+	return buildRuntimeFingerprint(
+		runtimeKey,
+		profileVersion,
+		strings.TrimSpace(runtime.SystemPrompt),
+		append([]infruntime.MiddlewareUse(nil), runtime.Middlewares...),
+		append([]string(nil), runtime.ToolNames...),
+		inferenceSettings,
+	)
+}
+
+func toResolvedConversationRequest(plan *resolvedConversationPlan) webhttp.ResolvedConversationRequest {
+	if plan == nil || plan.Runtime == nil {
+		return webhttp.ResolvedConversationRequest{}
+	}
+	return webhttp.ResolvedConversationRequest{
+		ConvID:                    plan.ConvID,
+		RuntimeKey:                plan.Runtime.RuntimeKey,
+		RuntimeFingerprint:        plan.Runtime.RuntimeFingerprint,
+		ProfileVersion:            plan.Runtime.ProfileVersion,
+		ResolvedInferenceSettings: cloneResolvedInferenceSettings(plan.Runtime.InferenceSettings),
+		ResolvedRuntime: &infruntime.ProfileRuntime{
+			SystemPrompt: strings.TrimSpace(plan.Runtime.SystemPrompt),
+			Middlewares:  append([]infruntime.MiddlewareUse(nil), plan.Runtime.Middlewares...),
+			Tools:        append([]string(nil), plan.Runtime.ToolNames...),
+		},
+		ProfileMetadata: copyMetadataMap(plan.Runtime.ProfileMetadata),
+		Prompt:          plan.Prompt,
+		IdempotencyKey:  plan.IdempotencyKey,
+	}
 }
 
 func rejectLegacySelectionFields(req *http.Request, legacyRuntimeKey string, legacyRegistry string) error {
@@ -306,6 +457,17 @@ func profileVersionFromResolvedMetadata(metadata map[string]any) uint64 {
 	return 0
 }
 
+func copyMetadataMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 func (r *StrictRequestResolver) toRequestResolutionError(err error, slug string) error {
 	if err == nil {
 		return nil
@@ -329,14 +491,6 @@ func (r *StrictRequestResolver) toRequestResolutionError(err error, slug string)
 		return &webhttp.RequestResolutionError{
 			Status:    http.StatusBadRequest,
 			ClientMsg: validationErr.Error(),
-			Err:       err,
-		}
-	}
-	var policyErr *gepprofiles.PolicyViolationError
-	if errors.As(err, &policyErr) {
-		return &webhttp.RequestResolutionError{
-			Status:    http.StatusBadRequest,
-			ClientMsg: policyErr.Error(),
 			Err:       err,
 		}
 	}

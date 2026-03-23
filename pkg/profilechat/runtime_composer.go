@@ -8,7 +8,6 @@ import (
 
 	gepmw "github.com/go-go-golems/geppetto/pkg/inference/middleware"
 	"github.com/go-go-golems/geppetto/pkg/inference/middlewarecfg"
-	gepprofiles "github.com/go-go-golems/geppetto/pkg/profiles"
 	"github.com/go-go-golems/geppetto/pkg/steps/ai/settings"
 	"github.com/go-go-golems/glazed/pkg/cmds/values"
 	infruntime "github.com/go-go-golems/pinocchio/pkg/inference/runtime"
@@ -16,10 +15,10 @@ import (
 )
 
 type RuntimeComposerOptions struct {
-	RuntimeKey       string
-	SystemPrompt     string
-	AllowedTools     []string
-	ContextProvider  ConversationContextProvider
+	RuntimeKey      string
+	SystemPrompt    string
+	AllowedTools    []string
+	ContextProvider ConversationContextProvider
 }
 
 type ConversationContext struct {
@@ -36,7 +35,7 @@ type RuntimeComposer struct {
 	options            RuntimeComposerOptions
 	definitions        middlewarecfg.DefinitionRegistry
 	buildDeps          middlewarecfg.BuildDeps
-	defaultMiddlewares []gepprofiles.MiddlewareUse
+	defaultMiddlewares []infruntime.MiddlewareUse
 }
 
 func NewRuntimeComposer(
@@ -44,7 +43,7 @@ func NewRuntimeComposer(
 	options RuntimeComposerOptions,
 	definitions middlewarecfg.DefinitionRegistry,
 	buildDeps middlewarecfg.BuildDeps,
-	defaultMiddlewares []gepprofiles.MiddlewareUse,
+	defaultMiddlewares []infruntime.MiddlewareUse,
 ) *RuntimeComposer {
 	return &RuntimeComposer{
 		parsed:             parsed,
@@ -60,7 +59,7 @@ func NewRuntimeComposerWithDefinitions(
 	options RuntimeComposerOptions,
 	definitions middlewarecfg.DefinitionRegistry,
 	buildDeps middlewarecfg.BuildDeps,
-	defaultMiddlewares []gepprofiles.MiddlewareUse,
+	defaultMiddlewares []infruntime.MiddlewareUse,
 ) *RuntimeComposer {
 	return NewRuntimeComposer(parsed, options, definitions, buildDeps, defaultMiddlewares)
 }
@@ -80,18 +79,12 @@ func (c *RuntimeComposer) Compose(ctx context.Context, req infruntime.Conversati
 		return infruntime.ComposedRuntime{}, errors.New("compose context is nil")
 	}
 
-	profileRuntime := req.ResolvedProfileRuntime
-
-	stepSettings, err := settings.NewStepSettingsFromParsedValues(c.parsed)
+	effectiveInferenceSettings, err := settings.NewInferenceSettingsFromParsedValues(c.parsed)
 	if err != nil {
-		return infruntime.ComposedRuntime{}, errors.Wrap(err, "parse step settings")
+		return infruntime.ComposedRuntime{}, errors.Wrap(err, "parse inference settings")
 	}
-	effectiveStepSettings := stepSettings.Clone()
-	if profileRuntime != nil && len(profileRuntime.StepSettingsPatch) > 0 {
-		effectiveStepSettings, err = gepprofiles.ApplyRuntimeStepSettingsPatch(stepSettings, profileRuntime.StepSettingsPatch)
-		if err != nil {
-			return infruntime.ComposedRuntime{}, errors.Wrap(err, "apply profile step_settings_patch")
-		}
+	if req.ResolvedInferenceSettings != nil {
+		effectiveInferenceSettings = req.ResolvedInferenceSettings.Clone()
 	}
 
 	runtimeKey := strings.TrimSpace(req.ProfileKey)
@@ -102,6 +95,8 @@ func (c *RuntimeComposer) Compose(ctx context.Context, req infruntime.Conversati
 		runtimeKey = "default"
 	}
 
+	profileRuntime := req.ResolvedProfileRuntime
+
 	systemPrompt := strings.TrimSpace(c.options.SystemPrompt)
 	if profileRuntime != nil && strings.TrimSpace(profileRuntime.SystemPrompt) != "" {
 		systemPrompt = strings.TrimSpace(profileRuntime.SystemPrompt)
@@ -109,10 +104,12 @@ func (c *RuntimeComposer) Compose(ctx context.Context, req infruntime.Conversati
 	if systemPrompt == "" {
 		systemPrompt = "You are a helpful assistant."
 	}
+
 	allowedTools := append([]string(nil), c.options.AllowedTools...)
 	if profileRuntime != nil && len(profileRuntime.Tools) > 0 {
-		allowedTools = append([]string(nil), profileRuntime.Tools...)
+		allowedTools = runtimeToolsFromProfile(profileRuntime)
 	}
+
 	contextAddendum := ""
 	if c.options.ContextProvider != nil && strings.TrimSpace(req.ConvID) != "" {
 		convContext, err := c.options.ContextProvider.Lookup(ctx, strings.TrimSpace(req.ConvID))
@@ -135,14 +132,18 @@ func (c *RuntimeComposer) Compose(ctx context.Context, req infruntime.Conversati
 		profileMiddlewares = cloneMiddlewareUses(c.defaultMiddlewares)
 	}
 
-	resolvedMiddlewares, resolvedUses, err := c.resolveMiddlewares(ctx, profileMiddlewares)
+	middlewareInputs, err := runtimeMiddlewareInputsFromProfile(profileMiddlewares)
+	if err != nil {
+		return infruntime.ComposedRuntime{}, errors.Wrap(err, "normalize middleware inputs")
+	}
+	resolvedMiddlewares, resolvedUses, err := c.resolveMiddlewares(ctx, middlewareInputs)
 	if err != nil {
 		return infruntime.ComposedRuntime{}, errors.Wrap(err, "resolve middlewares")
 	}
 
 	engine_, err := infruntime.BuildEngineFromSettingsWithMiddlewares(
 		ctx,
-		effectiveStepSettings,
+		effectiveInferenceSettings,
 		systemPrompt,
 		resolvedMiddlewares,
 	)
@@ -150,77 +151,81 @@ func (c *RuntimeComposer) Compose(ctx context.Context, req infruntime.Conversati
 		return infruntime.ComposedRuntime{}, errors.Wrap(err, "compose engine")
 	}
 
+	runtimeFingerprint := strings.TrimSpace(req.ResolvedProfileFingerprint)
+	if runtimeFingerprint == "" {
+		runtimeFingerprint = buildRuntimeFingerprint(runtimeKey, req.ProfileVersion, systemPrompt, resolvedUses, allowedTools, effectiveInferenceSettings)
+	}
+
 	return infruntime.ComposedRuntime{
-		Engine:     engine_,
-		RuntimeKey: runtimeKey,
-		RuntimeFingerprint: runtimeFingerprint(runtimeFingerprintInput{
-			ProfileVersion:      req.ProfileVersion,
-			RuntimeKey:          runtimeKey,
-			SystemPrompt:        systemPrompt,
-			AllowedTools:        allowedTools,
-			ContextAddendum:     contextAddendum,
-			ResolvedMiddlewares: resolvedUses,
-			ProfileRuntime:      profileRuntime,
-			StepSettings:        effectiveStepSettings,
-		}),
-		SeedSystemPrompt: systemPrompt,
-		AllowedTools:     allowedTools,
+		Engine:             engine_,
+		RuntimeKey:         runtimeKey,
+		RuntimeFingerprint: runtimeFingerprint,
+		SeedSystemPrompt:   systemPrompt,
 	}, nil
+}
+
+type middlewareResolveInput struct {
+	Use           infruntime.MiddlewareUse
+	ProfileConfig map[string]any
 }
 
 func (c *RuntimeComposer) resolveMiddlewares(
 	ctx context.Context,
-	profileMiddlewares []gepprofiles.MiddlewareUse,
-) ([]gepmw.Middleware, []gepprofiles.MiddlewareUse, error) {
-	if len(profileMiddlewares) == 0 {
+	inputs []middlewareResolveInput,
+) ([]gepmw.Middleware, []infruntime.MiddlewareUse, error) {
+	if len(inputs) == 0 {
 		return nil, nil, nil
 	}
 	if c == nil || c.definitions == nil {
 		return nil, nil, errors.New("middleware definitions are not configured")
 	}
 
-	resolvedInstances := make([]middlewarecfg.ResolvedInstance, 0, len(profileMiddlewares))
-	resolvedUses := make([]gepprofiles.MiddlewareUse, 0, len(profileMiddlewares))
-	for i, use := range profileMiddlewares {
-		instanceKey := middlewarecfg.MiddlewareInstanceKey(use, i)
-		def, ok := c.definitions.GetDefinition(use.Name)
+	resolvedInstances := make([]middlewarecfg.ResolvedInstance, 0, len(inputs))
+	resolvedUses := make([]infruntime.MiddlewareUse, 0, len(inputs))
+	for i, input := range inputs {
+		instanceKey := middlewarecfg.MiddlewareInstanceKey(middlewarecfg.Use{
+			Name:    input.Use.Name,
+			ID:      input.Use.ID,
+			Enabled: cloneBoolPtr(input.Use.Enabled),
+		}, i)
+		def, ok := c.definitions.GetDefinition(input.Use.Name)
 		if !ok {
 			return nil, nil, fmt.Errorf("unknown middleware %s", instanceKey)
 		}
 
-		sourcePayload, err := normalizeConfigObject(use.Config, fmt.Sprintf("profile middleware %s config", instanceKey))
-		if err != nil {
-			return nil, nil, err
-		}
 		sources := make([]middlewarecfg.Source, 0, 1)
-		if len(sourcePayload) > 0 {
+		if len(input.ProfileConfig) > 0 {
 			sources = append(sources, fixedPayloadSource{
 				name:    "profile",
 				layer:   middlewarecfg.SourceLayerProfile,
-				payload: sourcePayload,
+				payload: input.ProfileConfig,
 			})
 		}
 
 		resolver := middlewarecfg.NewResolver(sources...)
-		resolvedCfg, err := resolver.Resolve(def, gepprofiles.MiddlewareUse{
-			Name:    use.Name,
-			ID:      use.ID,
-			Enabled: cloneBoolPtr(use.Enabled),
+		resolvedCfg, err := resolver.Resolve(def, middlewarecfg.Use{
+			Name:    input.Use.Name,
+			ID:      input.Use.ID,
+			Enabled: cloneBoolPtr(input.Use.Enabled),
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("resolve middleware %s: %w", instanceKey, err)
 		}
 
 		resolvedInstances = append(resolvedInstances, middlewarecfg.ResolvedInstance{
-			Key:      instanceKey,
-			Use:      use,
+			Key: instanceKey,
+			Use: middlewarecfg.Use{
+				Name:    input.Use.Name,
+				ID:      input.Use.ID,
+				Enabled: cloneBoolPtr(input.Use.Enabled),
+			},
 			Resolved: resolvedCfg,
 			Def:      def,
 		})
-		resolvedUses = append(resolvedUses, gepprofiles.MiddlewareUse{
-			Name:    use.Name,
-			ID:      use.ID,
-			Enabled: cloneBoolPtr(use.Enabled),
+		resolvedUses = append(resolvedUses, infruntime.MiddlewareUse{
+			Name:    input.Use.Name,
+			ID:      input.Use.ID,
+			Enabled: cloneBoolPtr(input.Use.Enabled),
 			Config:  cloneStringAnyMap(resolvedCfg.Config),
 		})
 	}
@@ -246,28 +251,29 @@ func (s fixedPayloadSource) Layer() middlewarecfg.SourceLayer {
 	return s.layer
 }
 
-func (s fixedPayloadSource) Payload(middlewarecfg.Definition, gepprofiles.MiddlewareUse) (map[string]any, bool, error) {
+func (s fixedPayloadSource) Payload(middlewarecfg.Definition, middlewarecfg.Use) (map[string]any, bool, error) {
 	if len(s.payload) == 0 {
 		return nil, false, nil
 	}
 	return cloneStringAnyMap(s.payload), true, nil
 }
 
-func runtimeMiddlewaresFromProfile(spec *gepprofiles.RuntimeSpec) ([]gepprofiles.MiddlewareUse, error) {
+func runtimeMiddlewaresFromProfile(spec *infruntime.ProfileRuntime) ([]infruntime.MiddlewareUse, error) {
 	if spec == nil || len(spec.Middlewares) == 0 {
 		return nil, nil
 	}
-	middlewares := make([]gepprofiles.MiddlewareUse, 0, len(spec.Middlewares))
+
+	middlewares := make([]infruntime.MiddlewareUse, 0, len(spec.Middlewares))
 	for i, mw := range spec.Middlewares {
 		name := strings.TrimSpace(mw.Name)
 		if name == "" {
 			continue
 		}
-		config, err := normalizeConfigObject(mw.Config, fmt.Sprintf("profile middleware %s config", middlewarecfg.MiddlewareInstanceKey(mw, i)))
+		config, err := normalizeConfigObject(mw.Config, fmt.Sprintf("profile middleware %s config", middlewarecfg.MiddlewareInstanceKey(middlewarecfg.Use{Name: mw.Name, ID: mw.ID, Enabled: cloneBoolPtr(mw.Enabled)}, i)))
 		if err != nil {
 			return nil, err
 		}
-		middlewares = append(middlewares, gepprofiles.MiddlewareUse{
+		middlewares = append(middlewares, infruntime.MiddlewareUse{
 			Name:    name,
 			ID:      strings.TrimSpace(mw.ID),
 			Enabled: cloneBoolPtr(mw.Enabled),
@@ -280,18 +286,60 @@ func runtimeMiddlewaresFromProfile(spec *gepprofiles.RuntimeSpec) ([]gepprofiles
 	return middlewares, nil
 }
 
-func cloneMiddlewareUses(in []gepprofiles.MiddlewareUse) []gepprofiles.MiddlewareUse {
+func runtimeMiddlewareInputsFromProfile(profileMiddlewares []infruntime.MiddlewareUse) ([]middlewareResolveInput, error) {
+	inputs := make([]middlewareResolveInput, 0, len(profileMiddlewares))
+
+	for i, use := range profileMiddlewares {
+		name := strings.TrimSpace(use.Name)
+		if name == "" {
+			continue
+		}
+		profileConfig, err := normalizeConfigObject(use.Config, fmt.Sprintf("profile middleware %s config", middlewarecfg.MiddlewareInstanceKey(middlewarecfg.Use{Name: use.Name, ID: use.ID, Enabled: cloneBoolPtr(use.Enabled)}, i)))
+		if err != nil {
+			return nil, err
+		}
+		inputs = append(inputs, middlewareResolveInput{
+			Use: infruntime.MiddlewareUse{
+				Name:    name,
+				ID:      strings.TrimSpace(use.ID),
+				Enabled: cloneBoolPtr(use.Enabled),
+			},
+			ProfileConfig: profileConfig,
+		})
+	}
+	return inputs, nil
+}
+
+func runtimeToolsFromProfile(spec *infruntime.ProfileRuntime) []string {
+	if spec == nil || len(spec.Tools) == 0 {
+		return nil
+	}
+	tools := make([]string, 0, len(spec.Tools))
+	for _, tool := range spec.Tools {
+		name := strings.TrimSpace(tool)
+		if name == "" {
+			continue
+		}
+		tools = append(tools, name)
+	}
+	if len(tools) == 0 {
+		return nil
+	}
+	return tools
+}
+
+func cloneMiddlewareUses(in []infruntime.MiddlewareUse) []infruntime.MiddlewareUse {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]gepprofiles.MiddlewareUse, 0, len(in))
+	out := make([]infruntime.MiddlewareUse, 0, len(in))
 	for _, mw := range in {
 		name := strings.TrimSpace(mw.Name)
 		if name == "" {
 			continue
 		}
 		config, _ := normalizeConfigObject(mw.Config, "")
-		out = append(out, gepprofiles.MiddlewareUse{
+		out = append(out, infruntime.MiddlewareUse{
 			Name:    name,
 			ID:      strings.TrimSpace(mw.ID),
 			Enabled: cloneBoolPtr(mw.Enabled),
@@ -304,50 +352,48 @@ func cloneMiddlewareUses(in []gepprofiles.MiddlewareUse) []gepprofiles.Middlewar
 	return out
 }
 
+type RuntimeFingerprintInput struct {
+	ProfileVersion uint64                     `json:"profile_version,omitempty"`
+	RuntimeKey     string                     `json:"runtime_key"`
+	SystemPrompt   string                     `json:"system_prompt"`
+	Middlewares    []infruntime.MiddlewareUse `json:"middlewares"`
+	Tools          []string                   `json:"tools"`
+	StepMetadata   map[string]any             `json:"step_metadata,omitempty"`
+}
+
+func buildRuntimeFingerprint(
+	runtimeKey string,
+	profileVersion uint64,
+	systemPrompt string,
+	middlewares []infruntime.MiddlewareUse,
+	tools []string,
+	inferenceSettings *settings.InferenceSettings,
+) string {
+	var metadata map[string]any
+	if inferenceSettings != nil {
+		metadata = inferenceSettings.GetMetadata()
+	}
+	payload := RuntimeFingerprintInput{
+		ProfileVersion: profileVersion,
+		RuntimeKey:     runtimeKey,
+		SystemPrompt:   systemPrompt,
+		Middlewares:    middlewares,
+		Tools:          tools,
+		StepMetadata:   metadata,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return runtimeKey
+	}
+	return string(b)
+}
+
 func cloneBoolPtr(in *bool) *bool {
 	if in == nil {
 		return nil
 	}
 	v := *in
 	return &v
-}
-
-type runtimeFingerprintInput struct {
-	ProfileVersion      uint64
-	RuntimeKey          string
-	SystemPrompt        string
-	ContextAddendum     string
-	AllowedTools        []string
-	ResolvedMiddlewares []gepprofiles.MiddlewareUse
-	ProfileRuntime      *gepprofiles.RuntimeSpec
-	StepSettings        *settings.StepSettings
-}
-
-func runtimeFingerprint(in runtimeFingerprintInput) string {
-	payload := map[string]any{
-		"profile_version":      in.ProfileVersion,
-		"runtime_key":          in.RuntimeKey,
-		"system_prompt":        in.SystemPrompt,
-		"context_addendum":     in.ContextAddendum,
-		"allowed_tools":        in.AllowedTools,
-		"resolved_middlewares": in.ResolvedMiddlewares,
-	}
-	if in.ProfileRuntime != nil {
-		payload["profile_runtime"] = map[string]any{
-			"system_prompt":       in.ProfileRuntime.SystemPrompt,
-			"middlewares":         in.ProfileRuntime.Middlewares,
-			"tools":               in.ProfileRuntime.Tools,
-			"step_settings_patch": in.ProfileRuntime.StepSettingsPatch,
-		}
-	}
-	if in.StepSettings != nil {
-		payload["step_metadata"] = in.StepSettings.GetMetadata()
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return in.RuntimeKey
-	}
-	return string(b)
 }
 
 func joinPromptSections(parts ...string) string {
@@ -369,6 +415,7 @@ func normalizeConfigObject(raw any, context string) (map[string]any, error) {
 	if object, ok := raw.(map[string]any); ok {
 		return cloneStringAnyMap(object), nil
 	}
+
 	b, err := json.Marshal(raw)
 	if err != nil {
 		return nil, fmt.Errorf("%s must be JSON-serializable: %w", strings.TrimSpace(context), err)
@@ -376,6 +423,9 @@ func normalizeConfigObject(raw any, context string) (map[string]any, error) {
 	var out map[string]any
 	if err := json.Unmarshal(b, &out); err != nil {
 		return nil, fmt.Errorf("%s must be an object: %w", strings.TrimSpace(context), err)
+	}
+	if out == nil {
+		return nil, nil
 	}
 	return out, nil
 }
@@ -386,10 +436,6 @@ func cloneStringAnyMap(in map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(in))
 	for key, value := range in {
-		if nested, ok := value.(map[string]any); ok {
-			out[key] = cloneStringAnyMap(nested)
-			continue
-		}
 		out[key] = value
 	}
 	return out
