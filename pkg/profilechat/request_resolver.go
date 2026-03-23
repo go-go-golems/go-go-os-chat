@@ -18,6 +18,7 @@ type StrictRequestResolver struct {
 	runtimeKey           string
 	profileRegistry      gepprofiles.Registry
 	defaultRegistrySlug  gepprofiles.RegistrySlug
+	defaultProfileSlug   gepprofiles.EngineProfileSlug
 	baseInferenceSetting *aisettings.InferenceSettings
 }
 
@@ -82,6 +83,14 @@ func (r *StrictRequestResolver) WithBaseInferenceSettings(base *aisettings.Infer
 		return r
 	}
 	r.baseInferenceSetting = base.Clone()
+	return r
+}
+
+func (r *StrictRequestResolver) WithDefaultProfileSelection(profileSlug gepprofiles.EngineProfileSlug) *StrictRequestResolver {
+	if r == nil {
+		return nil
+	}
+	r.defaultProfileSlug = profileSlug
 	return r
 }
 
@@ -213,7 +222,7 @@ func (r *StrictRequestResolver) resolveProfileSelection(req *http.Request, bodyP
 		slugRaw = strings.TrimSpace(req.URL.Query().Get("profile"))
 	}
 	if slugRaw == "" {
-		return "", nil
+		return r.defaultProfileSlug, nil
 	}
 
 	slug, err := gepprofiles.ParseEngineProfileSlug(slugRaw)

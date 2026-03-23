@@ -49,6 +49,18 @@ func TestStrictRequestResolver_ChatUsesProfileSelection(t *testing.T) {
 	require.Equal(t, "Analyst system", plan.ResolvedRuntime.SystemPrompt)
 }
 
+func TestStrictRequestResolver_UsesConfiguredDefaultProfileSelectionWhenRequestOmitsProfile(t *testing.T) {
+	r := newResolverWithProfiles(t).WithDefaultProfileSelection(gepprofiles.MustEngineProfileSlug("analyst"))
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"text":"hello"}`))
+
+	plan, err := r.Resolve(req)
+	require.NoError(t, err)
+	require.Equal(t, "analyst", plan.RuntimeKey)
+	require.Equal(t, uint64(7), plan.ProfileVersion)
+	require.NotNil(t, plan.ResolvedRuntime)
+	require.Equal(t, "Analyst system", plan.ResolvedRuntime.SystemPrompt)
+}
+
 func TestStrictRequestResolver_WSUsesProfileQuerySelection(t *testing.T) {
 	r := newResolverWithProfiles(t)
 	req := httptest.NewRequest(http.MethodGet, "/ws?conv_id=conv-1&profile=analyst", nil)
