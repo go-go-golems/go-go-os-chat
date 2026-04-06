@@ -2,6 +2,7 @@ package profilechat
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -170,6 +171,55 @@ func TestStrictRequestResolver_RequestOverridesAreValidatedByPolicy(t *testing.T
 	require.Equal(t, http.StatusBadRequest, re.Status)
 }
 
+func TestStrictRequestResolver_ResolveRuntimePlanMapsValidationErrorsToBadRequest(t *testing.T) {
+	r := NewStrictRequestResolver("inventory").WithProfileRegistry(runtimePlanErrorRegistry{
+		getErr: &gepprofiles.ValidationError{
+			Field:  "profile.extensions[pinocchio.runtime]",
+			Reason: "invalid middleware payload",
+		},
+	}, gepprofiles.MustRegistrySlug("default"))
+
+	_, err := r.resolveRuntimePlan(context.Background(), &gepprofiles.ResolvedEngineProfile{
+		RegistrySlug:      gepprofiles.MustRegistrySlug("default"),
+		EngineProfileSlug: gepprofiles.MustEngineProfileSlug("inventory"),
+		StackLineage: []gepprofiles.ResolvedProfileStackEntry{
+			{
+				RegistrySlug:      gepprofiles.MustRegistrySlug("default"),
+				EngineProfileSlug: gepprofiles.MustEngineProfileSlug("inventory"),
+			},
+		},
+	})
+	require.Error(t, err)
+
+	var re *webhttp.RequestResolutionError
+	require.ErrorAs(t, err, &re)
+	require.Equal(t, http.StatusBadRequest, re.Status)
+	require.Equal(t, "invalid pinocchio runtime extension", re.ClientMsg)
+}
+
+func TestStrictRequestResolver_ResolveRuntimePlanPreservesNonValidationErrors(t *testing.T) {
+	expectedErr := errors.New("registry unavailable")
+	r := NewStrictRequestResolver("inventory").WithProfileRegistry(runtimePlanErrorRegistry{
+		getErr: expectedErr,
+	}, gepprofiles.MustRegistrySlug("default"))
+
+	_, err := r.resolveRuntimePlan(context.Background(), &gepprofiles.ResolvedEngineProfile{
+		RegistrySlug:      gepprofiles.MustRegistrySlug("default"),
+		EngineProfileSlug: gepprofiles.MustEngineProfileSlug("inventory"),
+		StackLineage: []gepprofiles.ResolvedProfileStackEntry{
+			{
+				RegistrySlug:      gepprofiles.MustRegistrySlug("default"),
+				EngineProfileSlug: gepprofiles.MustEngineProfileSlug("inventory"),
+			},
+		},
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, expectedErr)
+
+	var re *webhttp.RequestResolutionError
+	require.False(t, errors.As(err, &re))
+}
+
 func newResolverWithProfiles(t *testing.T) *StrictRequestResolver {
 	t.Helper()
 
@@ -204,4 +254,28 @@ func testEngineProfileWithRuntime(t *testing.T, slug string, version uint64, sys
 		SystemPrompt: systemPrompt,
 	}))
 	return profile
+}
+
+type runtimePlanErrorRegistry struct {
+	getErr error
+}
+
+func (r runtimePlanErrorRegistry) ListRegistries(context.Context) ([]gepprofiles.RegistrySummary, error) {
+	return nil, nil
+}
+
+func (r runtimePlanErrorRegistry) GetRegistry(context.Context, gepprofiles.RegistrySlug) (*gepprofiles.EngineProfileRegistry, error) {
+	return nil, nil
+}
+
+func (r runtimePlanErrorRegistry) ListEngineProfiles(context.Context, gepprofiles.RegistrySlug) ([]*gepprofiles.EngineProfile, error) {
+	return nil, nil
+}
+
+func (r runtimePlanErrorRegistry) GetEngineProfile(context.Context, gepprofiles.RegistrySlug, gepprofiles.EngineProfileSlug) (*gepprofiles.EngineProfile, error) {
+	return nil, r.getErr
+}
+
+func (r runtimePlanErrorRegistry) ResolveEngineProfile(context.Context, gepprofiles.ResolveInput) (*gepprofiles.ResolvedEngineProfile, error) {
+	return nil, nil
 }

@@ -352,7 +352,8 @@ func (r *StrictRequestResolver) resolveRuntimePlan(
 		}
 		return nil, r.toRequestResolutionError(err, slug)
 	}
-	if resolved != nil && r.profileRegistry != nil {
+	var validationErr *gepprofiles.ValidationError
+	if errors.As(err, &validationErr) {
 		return nil, &webhttp.RequestResolutionError{
 			Status:    http.StatusBadRequest,
 			ClientMsg: "invalid pinocchio runtime extension",
