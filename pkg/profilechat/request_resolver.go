@@ -363,17 +363,6 @@ func (r *StrictRequestResolver) resolveRuntimePlan(
 	return nil, err
 }
 
-func (r *StrictRequestResolver) resolveProfileRuntime(ctx context.Context, resolved *gepprofiles.ResolvedEngineProfile) (*infruntime.ProfileRuntime, error) {
-	plan, err := r.resolveRuntimePlan(ctx, resolved)
-	if err != nil {
-		return nil, err
-	}
-	if plan == nil {
-		return nil, nil
-	}
-	return plan.Runtime, nil
-}
-
 func toResolvedConversationRequest(plan *resolvedConversationPlan) webhttp.ResolvedConversationRequest {
 	if plan == nil || plan.Runtime == nil {
 		return webhttp.ResolvedConversationRequest{}
