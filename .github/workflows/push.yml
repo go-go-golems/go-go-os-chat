@@ -10,41 +10,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - run: git fetch --force --tags
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.25.x'
+          go-version-file: go.mod
           cache: true
-      - name: Checkout go-go-app-inventory
-        uses: actions/checkout@v4
-        with:
-          repository: go-go-golems/go-go-app-inventory
-          path: deps/go-go-app-inventory
-      - name: Checkout go-go-app-arc-agi-3
-        uses: actions/checkout@v4
-        with:
-          repository: go-go-golems/go-go-app-arc-agi-3
-          path: deps/go-go-app-arc-agi-3
-      - name: Checkout go-go-gepa
-        uses: actions/checkout@v4
-        with:
-          repository: go-go-golems/go-go-gepa
-          path: deps/go-go-gepa
-      - name: Checkout go-go-os-backend
-        uses: actions/checkout@v4
-        with:
-          repository: go-go-golems/go-go-os-backend
-          path: deps/go-go-os-backend
-      - name: Wire local module replacements
-        run: |
-          go mod edit -replace github.com/go-go-golems/go-go-app-inventory=./deps/go-go-app-inventory
-          go mod edit -replace github.com/go-go-golems/go-go-app-arc-agi=./deps/go-go-app-arc-agi-3
-          go mod edit -replace github.com/go-go-golems/go-go-gepa=./deps/go-go-gepa
-          go mod edit -replace github.com/go-go-golems/go-go-os-backend=./deps/go-go-os-backend
-          go mod download
       -
-        name: Run unit tests
+        name: generate assets
+        run: go generate ./...
+      -
+        name: run unit tests
         run: go test ./...

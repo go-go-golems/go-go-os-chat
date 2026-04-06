@@ -286,17 +286,6 @@ func cloneResolvedInferenceSettings(in *aisettings.InferenceSettings) *aisetting
 	return in.Clone()
 }
 
-func resolvedInferenceSettingsForRequest(resolved *gepprofiles.ResolvedEngineProfile, base *aisettings.InferenceSettings) (*aisettings.InferenceSettings, error) {
-	if resolved == nil || resolved.InferenceSettings == nil {
-		return cloneResolvedInferenceSettings(base), nil
-	}
-	merged, err := gepprofiles.MergeInferenceSettings(base, resolved.InferenceSettings)
-	if err != nil {
-		return nil, err
-	}
-	return merged, nil
-}
-
 func (r *StrictRequestResolver) buildConversationPlan(
 	ctx context.Context,
 	convID string,
@@ -304,7 +293,7 @@ func (r *StrictRequestResolver) buildConversationPlan(
 	idempotencyKey string,
 	resolvedProfile *gepprofiles.ResolvedEngineProfile,
 ) (*resolvedConversationPlan, error) {
-	runtimePolicy, err := r.resolveProfileRuntime(ctx, resolvedProfile)
+	resolvedPlan, err := r.resolveRuntimePlan(ctx, resolvedProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -315,33 +304,28 @@ func (r *StrictRequestResolver) buildConversationPlan(
 	if runtimeKey == "" {
 		runtimeKey = "default"
 	}
-	profileVersion := profileVersionFromResolvedMetadata(nil)
-	profileMetadata := map[string]any(nil)
-	if resolvedProfile != nil {
-		profileVersion = profileVersionFromResolvedMetadata(resolvedProfile.Metadata)
-		profileMetadata = copyMetadataMap(resolvedProfile.Metadata)
-	}
-	inferenceSettings, err := resolvedInferenceSettingsForRequest(resolvedProfile, r.baseInferenceSetting)
-	if err != nil {
-		return nil, &webhttp.RequestResolutionError{
-			Status:    http.StatusInternalServerError,
-			ClientMsg: "failed to merge inference settings",
-			Err:       err,
-		}
-	}
 
 	runtime := &resolvedConversationRuntime{
 		RuntimeKey:        runtimeKey,
-		ProfileVersion:    profileVersion,
-		InferenceSettings: inferenceSettings,
-		ProfileMetadata:   profileMetadata,
+		ProfileVersion:    0,
+		InferenceSettings: nil,
+		ProfileMetadata:   nil,
 	}
-	if runtimePolicy != nil {
-		runtime.SystemPrompt = strings.TrimSpace(runtimePolicy.SystemPrompt)
-		runtime.Middlewares = append([]infruntime.MiddlewareUse(nil), runtimePolicy.Middlewares...)
-		runtime.ToolNames = append([]string(nil), runtimePolicy.Tools...)
+	if resolvedPlan != nil {
+		runtime.ProfileVersion = resolvedPlan.ProfileVersion
+		runtime.InferenceSettings = cloneResolvedInferenceSettings(resolvedPlan.InferenceSettings)
+		runtime.ProfileMetadata = copyMetadataMap(resolvedPlan.ProfileMetadata)
+		if resolvedPlan.Runtime != nil {
+			runtime.SystemPrompt = strings.TrimSpace(resolvedPlan.Runtime.SystemPrompt)
+			runtime.Middlewares = append([]infruntime.MiddlewareUse(nil), resolvedPlan.Runtime.Middlewares...)
+			runtime.ToolNames = append([]string(nil), resolvedPlan.Runtime.Tools...)
+		}
 	}
-	runtime.RuntimeFingerprint = buildResolvedRuntimeFingerprint(runtime.RuntimeKey, runtime.ProfileVersion, runtime, runtime.InferenceSettings)
+	runtime.RuntimeFingerprint = infruntime.BuildRuntimeFingerprintFromSettings(runtime.RuntimeKey, runtime.ProfileVersion, &infruntime.ProfileRuntime{
+		SystemPrompt: runtime.SystemPrompt,
+		Middlewares:  append([]infruntime.MiddlewareUse(nil), runtime.Middlewares...),
+		Tools:        append([]string(nil), runtime.ToolNames...),
+	}, runtime.InferenceSettings)
 
 	return &resolvedConversationPlan{
 		ConvID:         convID,
@@ -351,42 +335,32 @@ func (r *StrictRequestResolver) buildConversationPlan(
 	}, nil
 }
 
-func (r *StrictRequestResolver) resolveProfileRuntime(ctx context.Context, resolved *gepprofiles.ResolvedEngineProfile) (*infruntime.ProfileRuntime, error) {
-	if r == nil || r.profileRegistry == nil || resolved == nil {
-		return nil, nil
+func (r *StrictRequestResolver) resolveRuntimePlan(
+	ctx context.Context,
+	resolved *gepprofiles.ResolvedEngineProfile,
+) (*infruntime.ResolvedRuntimePlan, error) {
+	plan, err := infruntime.ResolveRuntimePlan(ctx, r.profileRegistry, resolved, infruntime.ResolveRuntimePlanOptions{
+		BaseInferenceSettings: r.baseInferenceSetting,
+	})
+	if err == nil {
+		return plan, nil
 	}
-	profile, err := r.profileRegistry.GetEngineProfile(ctx, resolved.RegistrySlug, resolved.EngineProfileSlug)
-	if err != nil {
-		return nil, r.toRequestResolutionError(err, resolved.EngineProfileSlug.String())
+	if errors.Is(err, gepprofiles.ErrProfileNotFound) {
+		slug := ""
+		if resolved != nil {
+			slug = resolved.EngineProfileSlug.String()
+		}
+		return nil, r.toRequestResolutionError(err, slug)
 	}
-	runtime, _, err := infruntime.ProfileRuntimeFromEngineProfile(profile)
-	if err != nil {
+	var validationErr *gepprofiles.ValidationError
+	if errors.As(err, &validationErr) {
 		return nil, &webhttp.RequestResolutionError{
 			Status:    http.StatusBadRequest,
 			ClientMsg: "invalid pinocchio runtime extension",
 			Err:       err,
 		}
 	}
-	return runtime, nil
-}
-
-func buildResolvedRuntimeFingerprint(
-	runtimeKey string,
-	profileVersion uint64,
-	runtime *resolvedConversationRuntime,
-	inferenceSettings *aisettings.InferenceSettings,
-) string {
-	if runtime == nil {
-		return buildRuntimeFingerprint(runtimeKey, profileVersion, "", nil, nil, inferenceSettings)
-	}
-	return buildRuntimeFingerprint(
-		runtimeKey,
-		profileVersion,
-		strings.TrimSpace(runtime.SystemPrompt),
-		append([]infruntime.MiddlewareUse(nil), runtime.Middlewares...),
-		append([]string(nil), runtime.ToolNames...),
-		inferenceSettings,
-	)
+	return nil, err
 }
 
 func toResolvedConversationRequest(plan *resolvedConversationPlan) webhttp.ResolvedConversationRequest {
@@ -439,31 +413,6 @@ func rejectLegacySelectionFields(req *http.Request, legacyRuntimeKey string, leg
 		}
 	}
 	return nil
-}
-
-func profileVersionFromResolvedMetadata(metadata map[string]any) uint64 {
-	raw := metadata["profile.version"]
-	switch v := raw.(type) {
-	case uint64:
-		return v
-	case uint32:
-		return uint64(v)
-	case uint:
-		return uint64(v)
-	case int64:
-		if v >= 0 {
-			return uint64(v)
-		}
-	case int:
-		if v >= 0 {
-			return uint64(v)
-		}
-	case float64:
-		if v >= 0 {
-			return uint64(v)
-		}
-	}
-	return 0
 }
 
 func copyMetadataMap(in map[string]any) map[string]any {

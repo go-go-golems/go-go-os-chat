@@ -3,9 +3,9 @@ module github.com/go-go-golems/go-go-os-chat
 go 1.26.1
 
 require (
-	github.com/go-go-golems/geppetto v0.11.2
-	github.com/go-go-golems/glazed v1.0.5
-	github.com/go-go-golems/pinocchio v0.10.10
+	github.com/go-go-golems/geppetto v0.11.8
+	github.com/go-go-golems/glazed v1.0.6
+	github.com/go-go-golems/pinocchio v0.10.13-0.20260330222144-10fd36ccc06f
 	github.com/go-go-golems/plz-confirm v0.0.4
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
@@ -35,7 +35,7 @@ require (
 	github.com/dop251/goja_nodejs v0.0.0-20260212111938-1f56ff5bcf14 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
-	github.com/go-go-golems/go-go-goja v0.4.5 // indirect
+	github.com/go-go-golems/go-go-goja v0.4.6 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect

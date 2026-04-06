@@ -153,7 +153,11 @@ func (c *RuntimeComposer) Compose(ctx context.Context, req infruntime.Conversati
 
 	runtimeFingerprint := strings.TrimSpace(req.ResolvedProfileFingerprint)
 	if runtimeFingerprint == "" {
-		runtimeFingerprint = buildRuntimeFingerprint(runtimeKey, req.ProfileVersion, systemPrompt, resolvedUses, allowedTools, effectiveInferenceSettings)
+		runtimeFingerprint = infruntime.BuildRuntimeFingerprintFromSettings(runtimeKey, req.ProfileVersion, &infruntime.ProfileRuntime{
+			SystemPrompt: systemPrompt,
+			Middlewares:  resolvedUses,
+			Tools:        allowedTools,
+		}, effectiveInferenceSettings)
 	}
 
 	return infruntime.ComposedRuntime{
@@ -350,42 +354,6 @@ func cloneMiddlewareUses(in []infruntime.MiddlewareUse) []infruntime.MiddlewareU
 		return nil
 	}
 	return out
-}
-
-type RuntimeFingerprintInput struct {
-	ProfileVersion uint64                     `json:"profile_version,omitempty"`
-	RuntimeKey     string                     `json:"runtime_key"`
-	SystemPrompt   string                     `json:"system_prompt"`
-	Middlewares    []infruntime.MiddlewareUse `json:"middlewares"`
-	Tools          []string                   `json:"tools"`
-	StepMetadata   map[string]any             `json:"step_metadata,omitempty"`
-}
-
-func buildRuntimeFingerprint(
-	runtimeKey string,
-	profileVersion uint64,
-	systemPrompt string,
-	middlewares []infruntime.MiddlewareUse,
-	tools []string,
-	inferenceSettings *settings.InferenceSettings,
-) string {
-	var metadata map[string]any
-	if inferenceSettings != nil {
-		metadata = inferenceSettings.GetMetadata()
-	}
-	payload := RuntimeFingerprintInput{
-		ProfileVersion: profileVersion,
-		RuntimeKey:     runtimeKey,
-		SystemPrompt:   systemPrompt,
-		Middlewares:    middlewares,
-		Tools:          tools,
-		StepMetadata:   metadata,
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return runtimeKey
-	}
-	return string(b)
 }
 
 func cloneBoolPtr(in *bool) *bool {
