@@ -1,6 +1,7 @@
 all: 
 
 VERSION=v0.1.14
+MODULE=github.com/go-go-golems/go-go-os-chat
 
 docker-lint:
 	docker run --rm -v $(shell pwd):/app -w /app golangci/golangci-lint:latest golangci-lint run -v
@@ -40,7 +41,7 @@ tag-patch:
 
 release:
 	git push origin --tags
-	GOPROXY=proxy.golang.org go list -m github.com/go-go-golems/wesen-os@$(shell svu current)
+	GOPROXY=proxy.golang.org go list -m $(MODULE)@$(shell svu current)
 
 bump-glazed:
 	go get github.com/go-go-golems/glazed@latest
@@ -49,4 +50,3 @@ bump-glazed:
 	go get github.com/go-go-golems/pinocchio@latest
 	go get github.com/go-go-golems/plz-confirm@latest
 	go mod tidy
-
