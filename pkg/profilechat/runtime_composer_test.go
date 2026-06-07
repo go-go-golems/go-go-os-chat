@@ -15,7 +15,7 @@ import (
 	"github.com/go-go-golems/geppetto/pkg/steps/ai/settings/openai"
 	"github.com/go-go-golems/glazed/pkg/cmds/fields"
 	"github.com/go-go-golems/glazed/pkg/cmds/values"
-	infruntime "github.com/go-go-golems/pinocchio/pkg/inference/runtime"
+	infruntime "github.com/go-go-golems/go-go-os-chat/pkg/inference/runtime"
 )
 
 type runtimeComposerTestContextProvider struct {

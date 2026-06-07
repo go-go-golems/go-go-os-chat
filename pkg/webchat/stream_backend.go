@@ -1,0 +1,104 @@
+package webchat
+
+import (
+	"context"
+	"strings"
+
+	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/pkg/errors"
+
+	"github.com/go-go-golems/geppetto/pkg/events"
+	"github.com/go-go-golems/glazed/pkg/cmds/values"
+	rediscfg "github.com/go-go-golems/go-go-os-chat/pkg/redisstream"
+)
+
+// StreamBackend wraps transport setup concerns (in-memory or redis) and
+// exposes publisher/subscriber construction for conversation streams.
+type StreamBackend interface {
+	EventRouter() *events.EventRouter
+	Publisher() message.Publisher
+	BuildSubscriber(ctx context.Context, convID string) (message.Subscriber, bool, error)
+	Close() error
+}
+
+type eventRouterStreamBackend struct {
+	router       *events.EventRouter
+	redisEnabled bool
+	redisAddr    string
+	redisGroup   string
+}
+
+func NewStreamBackend(ctx context.Context, settings rediscfg.Settings) (StreamBackend, error) {
+	if ctx == nil {
+		return nil, errors.New("ctx is nil")
+	}
+	router, err := rediscfg.BuildRouter(settings, true)
+	if err != nil {
+		return nil, errors.Wrap(err, "build event router")
+	}
+	redisGroup := strings.TrimSpace(settings.Group)
+	if redisGroup == "" {
+		redisGroup = "chat-ui"
+	}
+	return &eventRouterStreamBackend{
+		router:       router,
+		redisEnabled: settings.Enabled,
+		redisAddr:    settings.Addr,
+		redisGroup:   redisGroup,
+	}, nil
+}
+
+// Deprecated: use NewStreamBackend with already-decoded redis settings.
+func NewStreamBackendFromValues(ctx context.Context, parsed *values.Values) (StreamBackend, error) {
+	if ctx == nil {
+		return nil, errors.New("ctx is nil")
+	}
+	if parsed == nil {
+		return nil, errors.New("parsed values are nil")
+	}
+	rs := rediscfg.Settings{}
+	_ = parsed.DecodeSectionInto("redis", &rs)
+	return NewStreamBackend(ctx, rs)
+}
+
+func (b *eventRouterStreamBackend) EventRouter() *events.EventRouter {
+	if b == nil {
+		return nil
+	}
+	return b.router
+}
+
+func (b *eventRouterStreamBackend) Publisher() message.Publisher {
+	if b == nil || b.router == nil {
+		return nil
+	}
+	return b.router.Publisher
+}
+
+func (b *eventRouterStreamBackend) BuildSubscriber(ctx context.Context, convID string) (message.Subscriber, bool, error) {
+	if b == nil || b.router == nil {
+		return nil, false, errors.New("stream backend is not initialized")
+	}
+	if convID == "" {
+		return nil, false, errors.New("convID is empty")
+	}
+	if b.redisEnabled {
+		if ctx == nil {
+			return nil, false, errors.New("ctx is nil")
+		}
+		_ = rediscfg.EnsureGroupAtTail(ctx, b.redisAddr, topicForConv(convID), b.redisGroup)
+		sub, err := rediscfg.BuildGroupSubscriber(b.redisAddr, b.redisGroup, "ws-forwarder:"+convID)
+		if err != nil {
+			return nil, false, err
+		}
+		return sub, true, nil
+	}
+	return b.router.Subscriber, false, nil
+}
+
+func (b *eventRouterStreamBackend) Close() error {
+	if b == nil || b.router == nil {
+		return nil
+	}
+	return b.router.Close()
+}
