@@ -26,17 +26,17 @@ func TestSemanticEventsFromEvent_UsesStableLLMIDs(t *testing.T) {
 		TurnID:      "turn-1",
 	}
 
-	startFrames := SemanticEventsFromEvent(events.NewStartEvent(meta))
+	startFrames := SemanticEventsFromEvent(events.NewTextSegmentStartedEvent(meta, events.Correlation{}, "assistant"))
 	require.Len(t, startFrames, 1)
 	start := decodeSemEvent(t, startFrames[0])
 	require.Equal(t, "llm.start", start["type"])
 
-	deltaFrames := SemanticEventsFromEvent(events.NewPartialCompletionEvent(meta, "Hello", "Hello"))
+	deltaFrames := SemanticEventsFromEvent(events.NewTextDeltaEvent(meta, events.Correlation{}, "Hello", "Hello", 1))
 	require.Len(t, deltaFrames, 1)
 	delta := decodeSemEvent(t, deltaFrames[0])
 	require.Equal(t, "llm.delta", delta["type"])
 
-	finalFrames := SemanticEventsFromEvent(events.NewFinalEvent(meta, "Hello"))
+	finalFrames := SemanticEventsFromEvent(events.NewTextSegmentFinishedEvent(meta, events.Correlation{}, "Hello", "stop"))
 	require.Len(t, finalFrames, 1)
 	final := decodeSemEvent(t, finalFrames[0])
 	require.Equal(t, "llm.final", final["type"])
@@ -66,15 +66,15 @@ func TestSemanticEventsFromEvent_DropsWhitespaceOnlyDeltas(t *testing.T) {
 		TurnID:      "turn-ws",
 	}
 
-	startFrames := SemanticEventsFromEvent(events.NewStartEvent(meta))
+	startFrames := SemanticEventsFromEvent(events.NewTextSegmentStartedEvent(meta, events.Correlation{}, "assistant"))
 	require.Len(t, startFrames, 1)
 	start := decodeSemEvent(t, startFrames[0])
 	wantID := start["id"].(string)
 
-	frames := SemanticEventsFromEvent(events.NewPartialCompletionEvent(meta, " \n\t ", " \n\t "))
+	frames := SemanticEventsFromEvent(events.NewTextDeltaEvent(meta, events.Correlation{}, " \n\t ", " \n\t ", 1))
 	require.Len(t, frames, 0)
 
-	deltaFrames := SemanticEventsFromEvent(events.NewPartialCompletionEvent(meta, "Hello", "Hello"))
+	deltaFrames := SemanticEventsFromEvent(events.NewTextDeltaEvent(meta, events.Correlation{}, "Hello", "Hello", 1))
 	require.Len(t, deltaFrames, 1)
 	delta := decodeSemEvent(t, deltaFrames[0])
 	require.Equal(t, "llm.delta", delta["type"])
@@ -90,7 +90,7 @@ func TestSemanticEventsFromEvent_PrefersExplicitUUIDMessageID(t *testing.T) {
 		TurnID:      "turn-2",
 	}
 
-	frames := SemanticEventsFromEvent(events.NewPartialCompletionEvent(meta, "a", "a"))
+	frames := SemanticEventsFromEvent(events.NewTextDeltaEvent(meta, events.Correlation{}, "a", "a", 1))
 	require.Len(t, frames, 1)
 	ev := decodeSemEvent(t, frames[0])
 	require.Equal(t, msgID.String(), ev["id"])
@@ -103,8 +103,7 @@ func TestSemanticEventsFromEvent_PrefersExplicitUUIDMessageID(t *testing.T) {
 func TestSemanticEventsFromEvent_CalcToolResultGetsCustomKind(t *testing.T) {
 	meta := events.EventMetadata{SessionID: "sess-3", InferenceID: "inf-3", TurnID: "turn-3"}
 
-	toolCall := events.ToolCall{ID: "tc-1", Name: "calc", Input: `{"expression":"1+1"}`}
-	callFrames := SemanticEventsFromEvent(events.NewToolCallEvent(meta, toolCall))
+	callFrames := SemanticEventsFromEvent(events.NewToolCallRequestedEvent(meta, events.Correlation{}, "tc-1", "calc", `{"expression":"1+1"}`))
 	require.Len(t, callFrames, 1)
 	callEv := decodeSemEvent(t, callFrames[0])
 	require.Equal(t, "tool.start", callEv["type"])
@@ -112,8 +111,7 @@ func TestSemanticEventsFromEvent_CalcToolResultGetsCustomKind(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "calc", callData["name"])
 
-	toolResult := events.ToolResult{ID: "tc-1", Result: "2"}
-	resultFrames := SemanticEventsFromEvent(events.NewToolResultEvent(meta, toolResult))
+	resultFrames := SemanticEventsFromEvent(events.NewToolResultReadyEvent(meta, events.Correlation{}, "tc-1", "calc", "2", "completed"))
 	require.Len(t, resultFrames, 2)
 	resEv := decodeSemEvent(t, resultFrames[0])
 	doneEv := decodeSemEvent(t, resultFrames[1])

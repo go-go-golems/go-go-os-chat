@@ -265,7 +265,7 @@ func (et *EventTranslator) RegisterDefaultHandlers() {
 		return [][]byte{wrapSem(map[string]any{"type": "log", "id": id, "data": data})}, nil
 	})
 
-	semregistry.RegisterByType[*events.EventPartialCompletionStart](func(ev *events.EventPartialCompletionStart) ([][]byte, error) {
+	semregistry.RegisterByType[*events.EventTextSegmentStarted](func(ev *events.EventTextSegmentStarted) ([][]byte, error) {
 		md := ev.Metadata()
 		id := et.resolveMessageID(md)
 		data, err := protoToRaw(&sempb.LlmStart{Id: id, Role: "assistant"})
@@ -281,14 +281,14 @@ func (et *EventTranslator) RegisterDefaultHandlers() {
 		return [][]byte{wrapSem(out)}, nil
 	})
 
-	semregistry.RegisterByType[*events.EventPartialCompletion](func(ev *events.EventPartialCompletion) ([][]byte, error) {
+	semregistry.RegisterByType[*events.EventTextDelta](func(ev *events.EventTextDelta) ([][]byte, error) {
 		if strings.TrimSpace(ev.Delta) == "" {
 			// Avoid spamming the UI with whitespace-only delta frames.
 			return nil, nil
 		}
 		md := ev.Metadata()
 		id := et.resolveMessageID(md)
-		data, err := protoToRaw(&sempb.LlmDelta{Id: id, Delta: ev.Delta, Cumulative: ev.Completion})
+		data, err := protoToRaw(&sempb.LlmDelta{Id: id, Delta: ev.Delta, Cumulative: ev.Text})
 		if err != nil {
 			return nil, err
 		}
@@ -301,7 +301,7 @@ func (et *EventTranslator) RegisterDefaultHandlers() {
 		return [][]byte{wrapSem(out)}, nil
 	})
 
-	semregistry.RegisterByType[*events.EventFinal](func(ev *events.EventFinal) ([][]byte, error) {
+	semregistry.RegisterByType[*events.EventTextSegmentFinished](func(ev *events.EventTextSegmentFinished) ([][]byte, error) {
 		md := ev.Metadata()
 		id := et.resolveMessageID(md)
 		data, err := protoToRaw(&sempb.LlmFinal{Id: id, Text: ev.Text})
@@ -363,11 +363,11 @@ func (et *EventTranslator) RegisterDefaultHandlers() {
 		return nil, nil
 	})
 
-	semregistry.RegisterByType[*events.EventThinkingPartial](func(ev *events.EventThinkingPartial) ([][]byte, error) {
+	semregistry.RegisterByType[*events.EventReasoningDelta](func(ev *events.EventReasoningDelta) ([][]byte, error) {
 		md := ev.Metadata()
 		baseID := et.resolveMessageID(md)
 		id := baseID + ":thinking"
-		data, err := protoToRaw(&sempb.LlmDelta{Id: id, Delta: ev.Delta, Cumulative: ev.Completion})
+		data, err := protoToRaw(&sempb.LlmDelta{Id: id, Delta: ev.Delta, Cumulative: ev.Text})
 		if err != nil {
 			return nil, err
 		}
@@ -392,97 +392,97 @@ func (et *EventTranslator) RegisterDefaultHandlers() {
 		return [][]byte{wrapSem(sem)}, nil
 	})
 
-	semregistry.RegisterByType[*events.EventToolCall](func(ev *events.EventToolCall) ([][]byte, error) {
+	semregistry.RegisterByType[*events.EventToolCallRequested](func(ev *events.EventToolCallRequested) ([][]byte, error) {
 		var inputObj map[string]any
-		if ev.ToolCall.Input != "" {
-			_ = json.Unmarshal([]byte(ev.ToolCall.Input), &inputObj)
+		if ev.Input != "" {
+			_ = json.Unmarshal([]byte(ev.Input), &inputObj)
 		}
-		et.toolCallCache.Store(ev.ToolCall.ID, cachedToolCall{Name: ev.ToolCall.Name, RawInput: ev.ToolCall.Input, InputObj: inputObj})
+		et.toolCallCache.Store(ev.ToolCallID, cachedToolCall{Name: ev.ToolName, RawInput: ev.Input, InputObj: inputObj})
 		input, err := mapToStruct(inputObj)
 		if err != nil {
 			return nil, err
 		}
-		data, err := protoToRaw(&sempb.ToolStart{Id: ev.ToolCall.ID, Name: ev.ToolCall.Name, Input: input})
+		data, err := protoToRaw(&sempb.ToolStart{Id: ev.ToolCallID, Name: ev.ToolName, Input: input})
 		if err != nil {
 			return nil, err
 		}
-		return [][]byte{wrapSem(map[string]any{"type": "tool.start", "id": ev.ToolCall.ID, "data": data})}, nil
+		return [][]byte{wrapSem(map[string]any{"type": "tool.start", "id": ev.ToolCallID, "data": data})}, nil
 	})
 
-	semregistry.RegisterByType[*events.EventToolCallExecute](func(ev *events.EventToolCallExecute) ([][]byte, error) {
+	semregistry.RegisterByType[*events.EventToolExecutionStarted](func(ev *events.EventToolExecutionStarted) ([][]byte, error) {
 		var inputObj map[string]any
-		if ev.ToolCall.Input != "" {
-			_ = json.Unmarshal([]byte(ev.ToolCall.Input), &inputObj)
+		if ev.Input != "" {
+			_ = json.Unmarshal([]byte(ev.Input), &inputObj)
 		}
-		et.toolCallCache.Store(ev.ToolCall.ID, cachedToolCall{Name: ev.ToolCall.Name, RawInput: ev.ToolCall.Input, InputObj: inputObj})
+		et.toolCallCache.Store(ev.ToolCallID, cachedToolCall{Name: ev.ToolName, RawInput: ev.Input, InputObj: inputObj})
 		patch, err := mapToStruct(map[string]any{"exec": true, "input": inputObj})
 		if err != nil {
 			return nil, err
 		}
-		data, err := protoToRaw(&sempb.ToolDelta{Id: ev.ToolCall.ID, Patch: patch})
+		data, err := protoToRaw(&sempb.ToolDelta{Id: ev.ToolCallID, Patch: patch})
 		if err != nil {
 			return nil, err
 		}
-		return [][]byte{wrapSem(map[string]any{"type": "tool.delta", "id": ev.ToolCall.ID, "data": data})}, nil
+		return [][]byte{wrapSem(map[string]any{"type": "tool.delta", "id": ev.ToolCallID, "data": data})}, nil
 	})
 
-	semregistry.RegisterByType[*events.EventToolResult](func(ev *events.EventToolResult) ([][]byte, error) {
+	semregistry.RegisterByType[*events.EventToolResultReady](func(ev *events.EventToolResultReady) ([][]byte, error) {
 		var frames [][]byte
-		if v, ok := et.toolCallCache.Load(ev.ToolResult.ID); ok {
+		if v, ok := et.toolCallCache.Load(ev.ToolCallID); ok {
 			if ctc, ok2 := v.(cachedToolCall); ok2 && ctc.Name == "calc" {
-				resultData, err := protoToRaw(&sempb.ToolResult{Id: ev.ToolResult.ID, Result: ev.ToolResult.Result, CustomKind: "calc_result"})
+				resultData, err := protoToRaw(&sempb.ToolResult{Id: ev.ToolCallID, Result: ev.Result, CustomKind: "calc_result"})
 				if err != nil {
 					return nil, err
 				}
-				doneData, err := protoToRaw(&sempb.ToolDone{Id: ev.ToolResult.ID})
+				doneData, err := protoToRaw(&sempb.ToolDone{Id: ev.ToolCallID})
 				if err != nil {
 					return nil, err
 				}
-				frames = append(frames, wrapSem(map[string]any{"type": "tool.result", "id": ev.ToolResult.ID, "data": resultData}))
-				frames = append(frames, wrapSem(map[string]any{"type": "tool.done", "id": ev.ToolResult.ID, "data": doneData}))
+				frames = append(frames, wrapSem(map[string]any{"type": "tool.result", "id": ev.ToolCallID, "data": resultData}))
+				frames = append(frames, wrapSem(map[string]any{"type": "tool.done", "id": ev.ToolCallID, "data": doneData}))
 				return frames, nil
 			}
 		}
-		resultData, err := protoToRaw(&sempb.ToolResult{Id: ev.ToolResult.ID, Result: ev.ToolResult.Result})
+		resultData, err := protoToRaw(&sempb.ToolResult{Id: ev.ToolCallID, Result: ev.Result})
 		if err != nil {
 			return nil, err
 		}
-		doneData, err := protoToRaw(&sempb.ToolDone{Id: ev.ToolResult.ID})
+		doneData, err := protoToRaw(&sempb.ToolDone{Id: ev.ToolCallID})
 		if err != nil {
 			return nil, err
 		}
-		frames = append(frames, wrapSem(map[string]any{"type": "tool.result", "id": ev.ToolResult.ID, "data": resultData}))
-		frames = append(frames, wrapSem(map[string]any{"type": "tool.done", "id": ev.ToolResult.ID, "data": doneData}))
+		frames = append(frames, wrapSem(map[string]any{"type": "tool.result", "id": ev.ToolCallID, "data": resultData}))
+		frames = append(frames, wrapSem(map[string]any{"type": "tool.done", "id": ev.ToolCallID, "data": doneData}))
 		return frames, nil
 	})
 
-	semregistry.RegisterByType[*events.EventToolCallExecutionResult](func(ev *events.EventToolCallExecutionResult) ([][]byte, error) {
+	semregistry.RegisterByType[*events.EventToolResultReady](func(ev *events.EventToolResultReady) ([][]byte, error) {
 		var frames [][]byte
-		if v, ok := et.toolCallCache.Load(ev.ToolResult.ID); ok {
+		if v, ok := et.toolCallCache.Load(ev.ToolCallID); ok {
 			if ctc, ok2 := v.(cachedToolCall); ok2 && ctc.Name == "calc" {
-				resultData, err := protoToRaw(&sempb.ToolResult{Id: ev.ToolResult.ID, Result: ev.ToolResult.Result, CustomKind: "calc_result"})
+				resultData, err := protoToRaw(&sempb.ToolResult{Id: ev.ToolCallID, Result: ev.Result, CustomKind: "calc_result"})
 				if err != nil {
 					return nil, err
 				}
-				doneData, err := protoToRaw(&sempb.ToolDone{Id: ev.ToolResult.ID})
+				doneData, err := protoToRaw(&sempb.ToolDone{Id: ev.ToolCallID})
 				if err != nil {
 					return nil, err
 				}
-				frames = append(frames, wrapSem(map[string]any{"type": "tool.result", "id": ev.ToolResult.ID, "data": resultData}))
-				frames = append(frames, wrapSem(map[string]any{"type": "tool.done", "id": ev.ToolResult.ID, "data": doneData}))
+				frames = append(frames, wrapSem(map[string]any{"type": "tool.result", "id": ev.ToolCallID, "data": resultData}))
+				frames = append(frames, wrapSem(map[string]any{"type": "tool.done", "id": ev.ToolCallID, "data": doneData}))
 				return frames, nil
 			}
 		}
-		resultData, err := protoToRaw(&sempb.ToolResult{Id: ev.ToolResult.ID, Result: ev.ToolResult.Result})
+		resultData, err := protoToRaw(&sempb.ToolResult{Id: ev.ToolCallID, Result: ev.Result})
 		if err != nil {
 			return nil, err
 		}
-		doneData, err := protoToRaw(&sempb.ToolDone{Id: ev.ToolResult.ID})
+		doneData, err := protoToRaw(&sempb.ToolDone{Id: ev.ToolCallID})
 		if err != nil {
 			return nil, err
 		}
-		frames = append(frames, wrapSem(map[string]any{"type": "tool.result", "id": ev.ToolResult.ID, "data": resultData}))
-		frames = append(frames, wrapSem(map[string]any{"type": "tool.done", "id": ev.ToolResult.ID, "data": doneData}))
+		frames = append(frames, wrapSem(map[string]any{"type": "tool.result", "id": ev.ToolCallID, "data": resultData}))
+		frames = append(frames, wrapSem(map[string]any{"type": "tool.done", "id": ev.ToolCallID, "data": doneData}))
 		return frames, nil
 	})
 
