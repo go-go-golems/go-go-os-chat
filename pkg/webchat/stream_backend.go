@@ -2,6 +2,7 @@ package webchat
 
 import (
 	"context"
+	"strings"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/pkg/errors"
@@ -24,6 +25,7 @@ type eventRouterStreamBackend struct {
 	router       *events.EventRouter
 	redisEnabled bool
 	redisAddr    string
+	redisGroup   string
 }
 
 func NewStreamBackend(ctx context.Context, settings rediscfg.Settings) (StreamBackend, error) {
@@ -34,10 +36,15 @@ func NewStreamBackend(ctx context.Context, settings rediscfg.Settings) (StreamBa
 	if err != nil {
 		return nil, errors.Wrap(err, "build event router")
 	}
+	redisGroup := strings.TrimSpace(settings.Group)
+	if redisGroup == "" {
+		redisGroup = "chat-ui"
+	}
 	return &eventRouterStreamBackend{
 		router:       router,
 		redisEnabled: settings.Enabled,
 		redisAddr:    settings.Addr,
+		redisGroup:   redisGroup,
 	}, nil
 }
 
@@ -79,8 +86,8 @@ func (b *eventRouterStreamBackend) BuildSubscriber(ctx context.Context, convID s
 		if ctx == nil {
 			return nil, false, errors.New("ctx is nil")
 		}
-		_ = rediscfg.EnsureGroupAtTail(ctx, b.redisAddr, topicForConv(convID), "ui")
-		sub, err := rediscfg.BuildGroupSubscriber(b.redisAddr, "ui", "ws-forwarder:"+convID)
+		_ = rediscfg.EnsureGroupAtTail(ctx, b.redisAddr, topicForConv(convID), b.redisGroup)
+		sub, err := rediscfg.BuildGroupSubscriber(b.redisAddr, b.redisGroup, "ws-forwarder:"+convID)
 		if err != nil {
 			return nil, false, err
 		}

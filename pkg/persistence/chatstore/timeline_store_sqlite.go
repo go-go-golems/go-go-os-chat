@@ -413,26 +413,27 @@ func (s *SQLiteTimelineStore) GetSnapshot(ctx context.Context, convID string, si
 
 	var query string
 	var args []any
+	fetchLimit := limit + 1
 	if sinceVersion == 0 {
 		// Full snapshot in canonical first-seen order.
 		query = `
-			SELECT entity_json
+			SELECT entity_json, version
 			FROM timeline_entities
 			WHERE conv_id = ?
 			ORDER BY created_at_ms ASC, entity_id ASC
 			LIMIT ?
 		`
-		args = []any{convID, limit}
+		args = []any{convID, fetchLimit}
 	} else {
 		// Incremental updates keep first-seen order among the changed rows.
 		query = `
-			SELECT entity_json
+			SELECT entity_json, version
 			FROM timeline_entities
 			WHERE conv_id = ? AND version > ?
 			ORDER BY created_at_ms ASC, entity_id ASC
 			LIMIT ?
 		`
-		args = []any{convID, sinceVersion, limit}
+		args = []any{convID, sinceVersion, fetchLimit}
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -441,11 +442,18 @@ func (s *SQLiteTimelineStore) GetSnapshot(ctx context.Context, convID string, si
 	}
 	defer func() { _ = rows.Close() }()
 
-	entities := make([]*timelinepb.TimelineEntityV2, 0, 128)
+	entities := make([]*timelinepb.TimelineEntityV2, 0, limit)
+	truncated := false
+	lastReturnedVersion := int64(0)
 	for rows.Next() {
 		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var rowVersion int64
+		if err := rows.Scan(&raw, &rowVersion); err != nil {
 			return nil, err
+		}
+		if len(entities) >= limit {
+			truncated = true
+			break
 		}
 		var e timelinepb.TimelineEntityV2
 		if err := (protojson.UnmarshalOptions{
@@ -454,12 +462,17 @@ func (s *SQLiteTimelineStore) GetSnapshot(ctx context.Context, convID string, si
 			return nil, errors.Wrap(err, "sqlite timeline store: unmarshal entity")
 		}
 		entities = append(entities, &e)
+		lastReturnedVersion = rowVersion
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	versionU64, err := int64ToUint64(current)
+	snapshotVersion := current
+	if truncated {
+		snapshotVersion = lastReturnedVersion
+	}
+	versionU64, err := int64ToUint64(snapshotVersion)
 	if err != nil {
 		return nil, errors.Wrap(err, "sqlite timeline store: invalid snapshot version")
 	}
