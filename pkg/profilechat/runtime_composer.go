@@ -10,7 +10,7 @@ import (
 	"github.com/go-go-golems/geppetto/pkg/inference/middlewarecfg"
 	"github.com/go-go-golems/geppetto/pkg/steps/ai/settings"
 	"github.com/go-go-golems/glazed/pkg/cmds/values"
-	infruntime "github.com/go-go-golems/pinocchio/pkg/inference/runtime"
+	infruntime "github.com/go-go-golems/go-go-os-chat/pkg/inference/runtime"
 	"github.com/pkg/errors"
 )
 

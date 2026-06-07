@@ -7,8 +7,8 @@ import (
 
 	gepprofiles "github.com/go-go-golems/geppetto/pkg/engineprofiles"
 	"github.com/go-go-golems/geppetto/pkg/inference/middlewarecfg"
-	webchat "github.com/go-go-golems/pinocchio/pkg/webchat"
-	webhttp "github.com/go-go-golems/pinocchio/pkg/webchat/http"
+	webchat "github.com/go-go-golems/go-go-os-chat/pkg/webchat"
+	webhttp "github.com/go-go-golems/go-go-os-chat/pkg/webchat/http"
 	plzconfirmbackend "github.com/go-go-golems/plz-confirm/pkg/backend"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"

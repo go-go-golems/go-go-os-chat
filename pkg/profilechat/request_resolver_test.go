@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	gepprofiles "github.com/go-go-golems/geppetto/pkg/engineprofiles"
-	infruntime "github.com/go-go-golems/pinocchio/pkg/inference/runtime"
-	webhttp "github.com/go-go-golems/pinocchio/pkg/webchat/http"
+	infruntime "github.com/go-go-golems/go-go-os-chat/pkg/inference/runtime"
+	webhttp "github.com/go-go-golems/go-go-os-chat/pkg/webchat/http"
 	"github.com/stretchr/testify/require"
 )
 

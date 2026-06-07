@@ -9,8 +9,8 @@ import (
 
 	gepprofiles "github.com/go-go-golems/geppetto/pkg/engineprofiles"
 	aisettings "github.com/go-go-golems/geppetto/pkg/steps/ai/settings"
-	infruntime "github.com/go-go-golems/pinocchio/pkg/inference/runtime"
-	webhttp "github.com/go-go-golems/pinocchio/pkg/webchat/http"
+	infruntime "github.com/go-go-golems/go-go-os-chat/pkg/inference/runtime"
+	webhttp "github.com/go-go-golems/go-go-os-chat/pkg/webchat/http"
 	"github.com/google/uuid"
 )
 
